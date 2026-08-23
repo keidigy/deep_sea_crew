@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { canPlayCard, cardWins, communicationPosition, drawTasks, TASK_CATALOG, trickWinner } from '../lib/game.mjs';
+import { canPlayCard, cardWins, communicationPosition, drawTasks, TASK_CATALOG, taskPassBudget, trickWinner } from '../lib/game.mjs';
 
 test('must follow the lead suit when possible', () => {
   const hand = [{ suit: 'blue', rank: 2 }, { suit: 'green', rank: 1 }];
@@ -30,4 +30,9 @@ test('communication only permits highest, lowest, or only colored card', () => {
   assert.equal(communicationPosition(hand, hand[1]), null);
   assert.equal(communicationPosition(hand, hand[2]), 'high');
   assert.equal(communicationPosition(hand, hand[3]), 'only');
+});
+test('pass budget fills the unused task-selection slots', () => {
+  assert.equal(taskPassBudget(3, 4), 2);
+  assert.equal(taskPassBudget(3, 1), 2);
+  assert.equal(taskPassBudget(5, 10), 0);
 });

@@ -2,7 +2,7 @@ import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { extname, join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { canPlayCard, communicationPosition, createDeck, drawTasks, missionForStage, shuffle, taskStatus, trickWinner } from './lib/game.mjs';
+import { canPlayCard, communicationPosition, createDeck, drawTasks, missionForStage, shuffle, taskPassBudget, taskStatus, trickWinner } from './lib/game.mjs';
 
 const root = join(process.cwd(), 'public');
 const publicRoot = resolve(root);
@@ -24,7 +24,7 @@ function publicRoom(room, viewerId) {
     game: game && {
       stage: game.stage, captainId: game.captainId, leaderId: game.leaderId, turnId: game.turnId, missionDifficulty: game.missionDifficulty, sonarEndsAt: game.sonarEndsAt,
       selectedTasks: game.tasks.map((task) => ({ ...task, status: task.ownerId ? taskStatus(task, game, task.ownerId) : 'unassigned' })),
-      selectionTurnId: game.selectionTurnId, passedIds: game.passedIds, canPassTask: canPassTask(room, viewerId), currentTrick: game.currentTrick.map((play) => ({ playerId: play.playerId, card: play.card })),
+      selectionTurnId: game.selectionTurnId, passCount: game.passCount, passBudget: game.passBudget, passHistory: game.passHistory, canPassTask: canPassTask(room, viewerId), currentTrick: game.currentTrick.map((play) => ({ playerId: play.playerId, card: play.card })),
       trickHistory: game.trickHistory.map((trick) => ({ winnerId: trick.winnerId, cards: trick.cards })),
       completedTricks: game.completedTricks, hand: game.hands[viewerId] ?? [], reserveCard: game.reserveCard,
       wonCards: Object.fromEntries(room.players.map((member) => [member.id, game.won[member.id].flat()])),
@@ -51,10 +51,11 @@ function startGame(room) {
   const missionDifficulty = mission.difficulty;
   room.game = {
     stage: mission.stage, hands, reserveCard, captainId: captain.id, leaderId: captain.id, turnId: captain.id, selectionTurnId: captain.id,
-    missionDifficulty, tasks: drawTasks(count, missionDifficulty), passedIds: [], currentTrick: [], trickHistory: [], completedTricks: 0,
+    missionDifficulty, tasks: drawTasks(count, missionDifficulty), passCount: 0, passBudget: 0, passHistory: [], currentTrick: [], trickHistory: [], completedTricks: 0,
     won: Object.fromEntries(room.players.map((member) => [member.id, []])), streaks: Object.fromEntries(room.players.map((member) => [member.id, 0])),
     communication: { mode: mission.communication, tokens: mission.communication === 'limited' ? Math.max(0, count - 2) : count, usedBy: [], allowedPlayerIds: mission.communication === 'limited' ? [] : room.players.map((member) => member.id), signals: {} }, sonarEndsAt: null, result: null, finished: false
   };
+  room.game.passBudget = taskPassBudget(count, room.game.tasks.length);
   room.status = 'selecting';
 }
 function grantCommunication(room, actorId, playerId) {
@@ -78,9 +79,7 @@ function communicate(room, actorId, cardId) {
   comm.usedBy.push(actorId);
 }
 function nextPlayer(room, playerId) { return room.players[(room.players.findIndex((member) => member.id === playerId) + 1) % room.players.length].id; }
-function remainingSelectors(room) { return room.players.filter((member) => !room.game.passedIds.includes(member.id)); }
-function nextSelectionPlayer(room, playerId) { const start = room.players.findIndex((member) => member.id === playerId); for (let offset = 1; offset <= room.players.length; offset += 1) { const candidate = room.players[(start + offset) % room.players.length]; if (!room.game.passedIds.includes(candidate.id)) return candidate.id; } return null; }
-function canPassTask(room, actorId) { if (room.status !== 'selecting' || room.game?.selectionTurnId !== actorId) return false; const remainingTasks = room.game.tasks.filter((task) => !task.ownerId).length; return remainingTasks < remainingSelectors(room).length; }
+function canPassTask(room, actorId) { return room.status === 'selecting' && room.game?.selectionTurnId === actorId && room.game.passCount < room.game.passBudget; }
 function selectTask(room, actorId, taskId) {
   const game = room.game;
   if (room.status !== 'selecting' || game.selectionTurnId !== actorId) throw new Error('지금은 과제를 선택할 차례가 아닙니다.');
@@ -88,13 +87,14 @@ function selectTask(room, actorId, taskId) {
   if (!task) throw new Error('선택할 수 없는 과제입니다.');
   task.ownerId = actorId;
   if (game.tasks.every((candidate) => candidate.ownerId)) { room.status = 'sonar'; game.selectionTurnId = null; game.sonarEndsAt = Date.now() + 10_000; return; }
-  game.selectionTurnId = nextSelectionPlayer(room, actorId);
+  game.selectionTurnId = nextPlayer(room, actorId);
 }
 function passTask(room, actorId) {
   const game = room.game;
-  if (!canPassTask(room, actorId)) throw new Error('남은 과제 수와 선택 가능한 대원 수가 같아지면 패스할 수 없습니다.');
-  game.passedIds.push(actorId);
-  game.selectionTurnId = nextSelectionPlayer(room, actorId);
+  if (!canPassTask(room, actorId)) throw new Error('이 임무에서 허용된 패스를 모두 사용했습니다.');
+  game.passCount += 1;
+  game.passHistory.push(actorId);
+  game.selectionTurnId = nextPlayer(room, actorId);
 }
 function advanceRoom(room) {
   if (room.status === 'sonar' && Date.now() >= room.game.sonarEndsAt) {
