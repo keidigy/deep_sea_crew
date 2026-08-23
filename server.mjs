@@ -8,19 +8,20 @@ const root = join(process.cwd(), 'public');
 const publicRoot = resolve(root);
 const rooms = new Map();
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8' };
+const PRESENCE_TIMEOUT_MS = 15_000;
 
 function roomCode() {
   let code;
   do code = Math.random().toString(36).slice(2, 7).toUpperCase(); while (rooms.has(code));
   return code;
 }
-function player(id, name, host = false) { return { id, name: String(name).trim().slice(0, 18) || '대원', host }; }
+function player(id, name, host = false) { return { id, name: String(name).trim().slice(0, 18) || '대원', host, lastSeen: Date.now() }; }
 function publicRoom(room, viewerId) {
   advanceRoom(room);
   const game = room.game;
   return {
     code: room.code, stage: room.stage, version: room.version, status: room.status, hostId: room.hostId,
-    players: room.players.map((member, seat) => ({ ...member, seat, handCount: game?.hands[member.id]?.length ?? 0 })),
+    players: room.players.map((member, seat) => ({ id: member.id, name: member.name, host: member.host, seat, handCount: game?.hands[member.id]?.length ?? 0 })),
     game: game && {
       stage: game.stage, captainId: game.captainId, leaderId: game.leaderId, turnId: game.turnId, missionDifficulty: game.missionDifficulty, sonarEndsAt: game.sonarEndsAt,
       selectedTasks: game.tasks.map((task) => ({ ...task, status: task.ownerId ? taskStatus(task, game, task.ownerId) : 'unassigned' })),
@@ -120,6 +121,52 @@ function playCard(room, actorId, cardId) {
   const allHandsEmpty = room.players.every((member) => game.hands[member.id].length === 0);
   if (allHandsEmpty) { game.finished = true; game.result = game.tasks.every((task) => taskStatus(task, game, task.ownerId) === 'complete') ? 'success' : 'fail'; room.status = 'finished'; }
 }
+function removeLobbyPlayer(room, playerId) {
+  const leavingIndex = room.players.findIndex((member) => member.id === playerId);
+  if (leavingIndex < 0) return { deleted: !rooms.has(room.code) };
+  room.players.splice(leavingIndex, 1);
+
+  // 혼자 남은 대기방은 다시 참가할 수 있는 방으로 남겨 두지 않는다.
+  if (room.players.length <= 1) {
+    rooms.delete(room.code);
+    return { deleted: true };
+  }
+
+  if (room.hostId === playerId) {
+    room.hostId = room.players[0].id;
+    room.players = room.players.map((member) => ({ ...member, host: member.id === room.hostId }));
+  }
+  room.version += 1;
+  return { deleted: false };
+}
+function leaveRoom(code, actorId) {
+  const room = rooms.get(code);
+  if (!room) throw new Error('방을 찾을 수 없습니다.');
+  if (room.status !== 'lobby') throw new Error('게임이 시작된 뒤에는 방을 나갈 수 없습니다.');
+  const leavingIndex = room.players.findIndex((member) => member.id === actorId);
+  if (leavingIndex < 0) throw new Error('이 방의 대원이 아닙니다.');
+  return removeLobbyPlayer(room, actorId);
+}
+function kickPlayer(code, actorId, targetPlayerId) {
+  const room = rooms.get(code);
+  if (!room) throw new Error('방을 찾을 수 없습니다.');
+  if (room.status !== 'lobby') throw new Error('게임이 시작된 뒤에는 강퇴할 수 없습니다.');
+  if (room.hostId !== actorId) throw new Error('방장만 강퇴할 수 있습니다.');
+  if (targetPlayerId === actorId) throw new Error('방장은 자기 자신을 강퇴할 수 없습니다.');
+  if (!room.players.some((member) => member.id === targetPlayerId)) throw new Error('강퇴할 대원을 찾을 수 없습니다.');
+  return removeLobbyPlayer(room, targetPlayerId);
+}
+function evictInactiveLobbyPlayers() {
+  const cutoff = Date.now() - PRESENCE_TIMEOUT_MS;
+  for (const room of rooms.values()) {
+    if (room.status !== 'lobby') continue;
+    const inactiveIds = room.players.filter((member) => member.lastSeen < cutoff).map((member) => member.id);
+    for (const playerId of inactiveIds) {
+      if (!rooms.has(room.code)) break;
+      removeLobbyPlayer(room, playerId);
+    }
+  }
+}
 function mutate(code, actorId, action, payload) {
   const room = rooms.get(code); if (!room) throw new Error('방을 찾을 수 없습니다.');
   advanceRoom(room);
@@ -144,7 +191,11 @@ const server = createServer(async (request, response) => {
     if (request.method === 'GET' && url.pathname === '/api/room') {
       const room = rooms.get(url.searchParams.get('code')?.toUpperCase());
       if (!room) return send(response, 404, { error: '방을 찾을 수 없습니다.' });
-      return send(response, 200, publicRoom(room, url.searchParams.get('playerId')));
+      const viewerId = url.searchParams.get('playerId');
+      const viewer = room.players.find((member) => member.id === viewerId);
+      if (!viewer) return send(response, 403, { error: '이 방의 대원이 아닙니다.' });
+      viewer.lastSeen = Date.now();
+      return send(response, 200, publicRoom(room, viewerId));
     }
     if (request.method === 'POST' && url.pathname === '/api/create') {
       const data = await body(request); const id = randomUUID(); const code = roomCode();
@@ -156,7 +207,17 @@ const server = createServer(async (request, response) => {
       const data = await body(request); const room = rooms.get(data.code?.toUpperCase());
       if (!room) return send(response, 404, { error: '방을 찾을 수 없습니다.' });
       if (room.status !== 'lobby' || room.players.length >= 5) return send(response, 409, { error: '입장할 수 없는 방입니다.' });
-      const id = randomUUID(); room.players.push(player(id, data.name)); room.version += 1; return send(response, 201, { code: room.code, playerId: id });
+      const id = randomUUID(); const joining = player(id, data.name);
+      if (room.players.some((member) => member.name.toLocaleLowerCase() === joining.name.toLocaleLowerCase())) return send(response, 409, { error: '같은 이름의 참가자가 이미 있습니다.' });
+      room.players.push(joining); room.version += 1; return send(response, 201, { code: room.code, playerId: id });
+    }
+    if (request.method === 'POST' && url.pathname === '/api/leave') {
+      const data = await body(request);
+      return send(response, 200, leaveRoom(data.code?.toUpperCase(), data.playerId));
+    }
+    if (request.method === 'POST' && url.pathname === '/api/kick') {
+      const data = await body(request);
+      return send(response, 200, kickPlayer(data.code?.toUpperCase(), data.playerId, data.targetPlayerId));
     }
     if (request.method === 'POST' && url.pathname === '/api/action') { const data = await body(request); return send(response, 200, mutate(data.code?.toUpperCase(), data.playerId, data.action, data)); }
     const path = url.pathname === '/' ? '/index.html' : url.pathname;
@@ -172,6 +233,7 @@ const server = createServer(async (request, response) => {
 });
 const port = Number(process.env.PORT || 3000);
 server.listen(port, '0.0.0.0', () => console.log(`Deep Sea Crew listening on ${port}`));
+setInterval(evictInactiveLobbyPlayers, 3_000).unref();
 
 function shutdown(signal) {
   console.log(`${signal} received; stopping HTTP server.`);
