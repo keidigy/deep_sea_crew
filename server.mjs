@@ -16,14 +16,15 @@ function roomCode() {
 }
 function player(id, name, host = false) { return { id, name: String(name).trim().slice(0, 18) || '대원', host }; }
 function publicRoom(room, viewerId) {
+  advanceRoom(room);
   const game = room.game;
   return {
     code: room.code, stage: room.stage, version: room.version, status: room.status, hostId: room.hostId,
     players: room.players.map((member, seat) => ({ ...member, seat, handCount: game?.hands[member.id]?.length ?? 0 })),
     game: game && {
-      stage: game.stage, captainId: game.captainId, leaderId: game.leaderId, turnId: game.turnId, missionDifficulty: game.missionDifficulty,
+      stage: game.stage, captainId: game.captainId, leaderId: game.leaderId, turnId: game.turnId, missionDifficulty: game.missionDifficulty, sonarEndsAt: game.sonarEndsAt,
       selectedTasks: game.tasks.map((task) => ({ ...task, status: task.ownerId ? taskStatus(task, game, task.ownerId) : 'unassigned' })),
-      selectionTurnId: game.selectionTurnId, currentTrick: game.currentTrick.map((play) => ({ playerId: play.playerId, card: play.card })),
+      selectionTurnId: game.selectionTurnId, passedIds: game.passedIds, canPassTask: canPassTask(room, viewerId), currentTrick: game.currentTrick.map((play) => ({ playerId: play.playerId, card: play.card })),
       trickHistory: game.trickHistory.map((trick) => ({ winnerId: trick.winnerId, cards: trick.cards })),
       completedTricks: game.completedTricks, hand: game.hands[viewerId] ?? [], reserveCard: game.reserveCard,
       wonCards: Object.fromEntries(room.players.map((member) => [member.id, game.won[member.id].flat()])),
@@ -50,9 +51,9 @@ function startGame(room) {
   const missionDifficulty = mission.difficulty;
   room.game = {
     stage: mission.stage, hands, reserveCard, captainId: captain.id, leaderId: captain.id, turnId: captain.id, selectionTurnId: captain.id,
-    missionDifficulty, tasks: drawTasks(count, missionDifficulty), currentTrick: [], trickHistory: [], completedTricks: 0,
+    missionDifficulty, tasks: drawTasks(count, missionDifficulty), passedIds: [], currentTrick: [], trickHistory: [], completedTricks: 0,
     won: Object.fromEntries(room.players.map((member) => [member.id, []])), streaks: Object.fromEntries(room.players.map((member) => [member.id, 0])),
-    communication: { mode: mission.communication, tokens: mission.communication === 'limited' ? Math.max(0, count - 2) : count, usedBy: [], allowedPlayerIds: mission.communication === 'limited' ? [] : room.players.map((member) => member.id), signals: {} }, result: null, finished: false
+    communication: { mode: mission.communication, tokens: mission.communication === 'limited' ? Math.max(0, count - 2) : count, usedBy: [], allowedPlayerIds: mission.communication === 'limited' ? [] : room.players.map((member) => member.id), signals: {} }, sonarEndsAt: null, result: null, finished: false
   };
   room.status = 'selecting';
 }
@@ -69,7 +70,7 @@ function grantCommunication(room, actorId, playerId) {
 }
 function communicate(room, actorId, cardId) {
   const game = room.game; const comm = game.communication;
-  if (room.status !== 'playing' || game.currentTrick.length) throw new Error('소나 표기는 새 트릭이 시작되기 전에만 할 수 있습니다.');
+  if (room.status !== 'sonar' || Date.now() >= game.sonarEndsAt) throw new Error('소나 표기 시간은 종료되었습니다.');
   if (comm.mode === 'none' || !comm.allowedPlayerIds.includes(actorId) || comm.usedBy.includes(actorId)) throw new Error('이 단계에서는 소나 표기를 사용할 수 없습니다.');
   const hand = game.hands[actorId]; const card = hand.find((candidate) => candidate.id === cardId); const position = card && communicationPosition(hand, card);
   if (!position) throw new Error('색 카드 중 해당 색의 최고·유일·최저 카드만 표기할 수 있습니다.');
@@ -77,14 +78,28 @@ function communicate(room, actorId, cardId) {
   comm.usedBy.push(actorId);
 }
 function nextPlayer(room, playerId) { return room.players[(room.players.findIndex((member) => member.id === playerId) + 1) % room.players.length].id; }
+function remainingSelectors(room) { return room.players.filter((member) => !room.game.passedIds.includes(member.id)); }
+function nextSelectionPlayer(room, playerId) { const start = room.players.findIndex((member) => member.id === playerId); for (let offset = 1; offset <= room.players.length; offset += 1) { const candidate = room.players[(start + offset) % room.players.length]; if (!room.game.passedIds.includes(candidate.id)) return candidate.id; } return null; }
+function canPassTask(room, actorId) { if (room.status !== 'selecting' || room.game?.selectionTurnId !== actorId) return false; const remainingTasks = room.game.tasks.filter((task) => !task.ownerId).length; return remainingTasks < remainingSelectors(room).length; }
 function selectTask(room, actorId, taskId) {
   const game = room.game;
   if (room.status !== 'selecting' || game.selectionTurnId !== actorId) throw new Error('지금은 과제를 선택할 차례가 아닙니다.');
   const task = game.tasks.find((candidate) => candidate.id === taskId && !candidate.ownerId);
   if (!task) throw new Error('선택할 수 없는 과제입니다.');
   task.ownerId = actorId;
-  if (game.tasks.every((candidate) => candidate.ownerId)) { room.status = 'playing'; game.selectionTurnId = null; return; }
-  game.selectionTurnId = nextPlayer(room, actorId);
+  if (game.tasks.every((candidate) => candidate.ownerId)) { room.status = 'sonar'; game.selectionTurnId = null; game.sonarEndsAt = Date.now() + 10_000; return; }
+  game.selectionTurnId = nextSelectionPlayer(room, actorId);
+}
+function passTask(room, actorId) {
+  const game = room.game;
+  if (!canPassTask(room, actorId)) throw new Error('남은 과제 수와 선택 가능한 대원 수가 같아지면 패스할 수 없습니다.');
+  game.passedIds.push(actorId);
+  game.selectionTurnId = nextSelectionPlayer(room, actorId);
+}
+function advanceRoom(room) {
+  if (room.status === 'sonar' && Date.now() >= room.game.sonarEndsAt) {
+    room.status = 'playing'; room.game.sonarEndsAt = null; room.version += 1;
+  }
 }
 function playCard(room, actorId, cardId) {
   const game = room.game;
@@ -107,9 +122,11 @@ function playCard(room, actorId, cardId) {
 }
 function mutate(code, actorId, action, payload) {
   const room = rooms.get(code); if (!room) throw new Error('방을 찾을 수 없습니다.');
+  advanceRoom(room);
   if (!room.players.some((member) => member.id === actorId)) throw new Error('이 방의 대원이 아닙니다.');
   if (action === 'start') { if (actorId !== room.hostId) throw new Error('방장만 시작할 수 있습니다.'); if (room.players.length < 3) throw new Error('최소 3명이 필요합니다.'); startGame(room); }
   if (action === 'selectTask') selectTask(room, actorId, payload.taskId);
+  if (action === 'passTask') passTask(room, actorId);
   if (action === 'grantCommunication') grantCommunication(room, actorId, payload.targetPlayerId);
   if (action === 'communicate') communicate(room, actorId, payload.cardId);
   if (action === 'playCard') playCard(room, actorId, payload.cardId);
