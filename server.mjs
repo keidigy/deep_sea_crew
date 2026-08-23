@@ -160,9 +160,12 @@ function removeLobbyPlayer(room, playerId) {
 function leaveRoom(code, actorId) {
   const room = rooms.get(code);
   if (!room) throw new Error('방을 찾을 수 없습니다.');
-  if (room.status !== 'lobby') throw new Error('게임이 시작된 뒤에는 방을 나갈 수 없습니다.');
   const leavingIndex = room.players.findIndex((member) => member.id === actorId);
   if (leavingIndex < 0) throw new Error('이 방의 대원이 아닙니다.');
+  if (room.status !== 'lobby') {
+    rooms.delete(code);
+    return { deleted: true, gameEnded: true };
+  }
   return removeLobbyPlayer(room, actorId);
 }
 function kickPlayer(code, actorId, targetPlayerId) {
