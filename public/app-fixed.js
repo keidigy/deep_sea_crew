@@ -1,89 +1,35 @@
 const app = document.querySelector('#app');
 let session = JSON.parse(localStorage.getItem('deep-sea-crew-session') || 'null');
-let room = null;
-let notice = '';
-const labels = { blue: '파랑', green: '초록', yellow: '노랑', pink: '분홍' };
-
-const post = async (path, body) => {
-  const response = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.error);
-  return data;
-};
+let room = null; let notice = ''; let optionsOpen = false;
+let soundEnabled = localStorage.getItem('deep-sea-crew-sound') !== 'off';
+let previousRoomStatus = null; let audioContext = null;
+const labels = { blue: '파랑', green: '초록', yellow: '노랑', pink: '분홍', sub: '잠수함' };
+const suitOrder = ['blue', 'green', 'yellow', 'pink', 'sub'];
+const post = async (path, body) => { const response = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }); const data = await response.json(); if (!response.ok) throw new Error(data.error); return data; };
 const saveSession = (next) => { session = next; localStorage.setItem('deep-sea-crew-session', JSON.stringify(next)); };
-const cardName = (card) => card.suit === 'sub' ? `잠수함 ${card.rank}` : `${labels[card.suit]} ${card.rank}`;
+const cardName = (card) => `${labels[card.suit]} ${card.rank}`;
+const signalLabel = { high: '위 · 최고', only: '가운데 · 유일', low: '아래 · 최저', center: '가운데' };
+function audio() { if (!soundEnabled) return null; if (!audioContext) audioContext = new (window.AudioContext || window.webkitAudioContext)(); audioContext.resume?.(); return audioContext; }
+function cardChop(start, level = .14, landing = false) { const context = audio(); if (!context) return; const duration = landing ? .11 : .075; const buffer = context.createBuffer(1, Math.floor(context.sampleRate * duration), context.sampleRate); const data = buffer.getChannelData(0); for (let index = 0; index < data.length; index += 1) { const fade = 1 - index / data.length; data[index] = (Math.random() * 2 - 1) * fade * fade; } const source = context.createBufferSource(); const high = context.createBiquadFilter(); const band = context.createBiquadFilter(); const gain = context.createGain(); high.type = 'highpass'; high.frequency.value = landing ? 260 : 620; band.type = 'bandpass'; band.frequency.value = landing ? 780 : 1650; band.Q.value = landing ? .7 : 1.3; gain.gain.setValueAtTime(.0001, start); gain.gain.exponentialRampToValueAtTime(level, start + .004); gain.gain.exponentialRampToValueAtTime(.0001, start + duration); source.buffer = buffer; source.connect(high).connect(band).connect(gain).connect(context.destination); source.start(start); }
+function playCardSound() { const context = audio(); if (!context) return; cardChop(context.currentTime, .16); cardChop(context.currentTime + .08, .09, true); }
+function playDealSound() { const context = audio(); if (!context) return; for (let index = 0; index < 16; index += 1) cardChop(context.currentTime + index * .055, .07); }
+function dealAnimation() { const layer = document.querySelector('#deal-layer'); if (!layer) return; const positions = [['-170px', '-115px', '-10deg'], ['170px', '-10px', '8deg'], ['-25px', '132px', '-3deg'], ['-170px', '15px', '-9deg']]; const suits = ['blue', 'green', 'yellow', 'pink']; for (let index = 0; index < 16; index += 1) { const card = document.createElement('div'); card.className = `deal-card ${suits[index % 4]}`; card.textContent = (index % 9) + 1; card.style.setProperty('--deal-x', positions[index % 4][0]); card.style.setProperty('--deal-y', positions[index % 4][1]); card.style.setProperty('--deal-r', positions[index % 4][2]); card.style.animationDelay = `${index * 55}ms`; layer.appendChild(card); setTimeout(() => card.remove(), 950 + index * 55); } playDealSound(); }
 
-async function refresh() {
-  if (!session) return render();
-  try {
-    const response = await fetch(`/api/room?code=${session.code}&playerId=${session.playerId}`);
-    if (!response.ok) throw new Error('missing room');
-    room = await response.json();
-  } catch {
-    localStorage.removeItem('deep-sea-crew-session'); session = null;
-    notice = '방이 종료되었거나 서버가 재시작됐습니다.';
-  }
-  render();
-}
-async function action(name, payload = {}) {
-  try { room = await post('/api/action', { ...session, action: name, ...payload }); render(); }
-  catch (error) { notice = error.message; render(); }
-}
-function lobbyHtml() {
-  return `<section class="panel hero"><p class="eyebrow">COOPERATIVE TRICK-TAKING</p><h1>DEEP SEA CREW</h1><p>3–5인이 한 팀으로 심해 임무를 수행하는 온라인 프로토타입</p><form id="create"><input name="name" maxlength="18" placeholder="내 이름" required><button>새 방 만들기</button></form><div class="divider">또는</div><form id="join"><input name="name" maxlength="18" placeholder="내 이름" required><input name="code" maxlength="5" placeholder="방 코드" required><button class="secondary">방 참가</button></form><p class="hint">현재 버전은 서버 메모리 기반입니다. 서버 재시작 시 방은 초기화됩니다.</p></section>`;
-}
-function taskHtml(task) {
-  const owner = room.players.find((member) => member.id === task.ownerId);
-  const status = task.status === 'complete' ? '완료' : task.status === 'failed' ? '실패' : '진행 중';
-  return `<li class="task ${task.status}"><strong>${task.label}</strong><span>${owner ? owner.name : '미배정'} · ${status}</span></li>`;
-}
-function crewHtml(state, isHost) {
-  const rows = room.players.map((member) => `<div class="crew-row ${member.id === state?.captainId ? 'captain' : ''}"><span>${member.id === state?.captainId ? '★ ' : ''}${member.name}</span><small>${member.handCount}장${member.id === state?.turnId ? ' · 차례' : ''}</small></div>`).join('');
-  const start = room.status === 'lobby' ? `<button id="start" ${room.players.length < 3 || !isHost ? 'disabled' : ''}>${isHost ? '임무 시작' : '방장이 시작하기를 기다리는 중'}</button>` : '';
-  return `<aside class="panel crew"><h2>대원 ${room.players.length}/5</h2>${rows}${start}<p class="hint">기본 게임 중 음성은 차단됩니다. 소나 행동은 다음 단계에서 추가합니다.</p></aside>`;
-}
-function selectionHtml(state) {
-  if (room.status !== 'selecting') return '';
-  const canPick = state.selectionTurnId === session.playerId;
-  const picker = room.players.find((member) => member.id === state.selectionTurnId);
-  const buttons = canPick ? state.selectedTasks.filter((task) => !task.ownerId).map((task) => `<button data-task="${task.id}" class="secondary">${task.label}</button>`).join('') : '';
-  return `<div class="selection"><p>${canPick ? '당신이 과제를 선택할 차례입니다.' : `${picker?.name ?? '대원'} 님이 선택 중입니다.`}</p>${buttons}</div>`;
-}
-function trickHtml(state) {
-  if (room.status !== 'playing' && room.status !== 'finished') return '';
-  const plays = state.currentTrick.length ? state.currentTrick.map((play) => `<div class="played"><span>${room.players.find((member) => member.id === play.playerId)?.name}</span><b class="${play.card.suit}">${cardName(play.card)}</b></div>`).join('') : '<p class="hint">선장이 첫 카드를 냅니다.</p>';
-  return `<div class="trick"><h2>현재 트릭</h2>${plays}</div>`;
-}
-function boardHtml(state) {
-  if (room.status === 'lobby') return '<section class="panel board"><div class="empty">3명 이상 모이면 방장이 임무를 시작할 수 있습니다.</div></section>';
-  const phase = room.status === 'selecting' ? '과제 선택 중' : room.status === 'playing' ? `${state.completedTricks} 트릭 완료` : state.result === 'success' ? '임무 성공' : '임무 실패';
-  return `<section class="panel board"><div class="mission"><span>임무 난이도</span><b>${state.missionDifficulty}</b><span>${phase}</span></div><h2>과제</h2><ul class="tasks">${state.selectedTasks.map(taskHtml).join('')}</ul>${selectionHtml(state)}${trickHtml(state)}</section>`;
-}
-function handHtml(state) {
-  if (room.status !== 'playing' && room.status !== 'finished') return '';
-  const myTurn = state.turnId === session.playerId && room.status === 'playing';
-  const cards = state.hand.map((card) => `<button class="card ${card.suit}" data-card="${card.id}" ${myTurn ? '' : 'disabled'}><span>${card.suit === 'sub' ? '⚓' : labels[card.suit]}</span><b>${card.rank}</b></button>`).join('');
-  return `<section class="panel hand"><h2>내 손패 ${myTurn ? '— 카드를 내세요' : ''}</h2><div class="cards">${cards}</div>${state.reserveCard ? '<p class="hint">3인 게임: 미사용 카드 1장은 게임에서 제외됩니다.</p>' : ''}</section>`;
-}
-function gameHtml() {
-  const state = room.game;
-  const isHost = room.hostId === session.playerId;
-  return `<header><div><p class="eyebrow">ROOM ${room.code}</p><h1>심해 탐사선</h1></div><div class="voice ${room.voice.enabled ? 'on' : 'off'}">🎙 ${room.voice.reason}</div></header><section class="grid">${crewHtml(state, isHost)}${boardHtml(state)}</section>${handHtml(state)}`;
-}
-function bind() {
-  document.querySelector('#dismiss')?.addEventListener('click', () => { notice = ''; render(); });
-  document.querySelector('#create')?.addEventListener('submit', async (event) => { event.preventDefault(); try { saveSession(await post('/api/create', { name: new FormData(event.target).get('name') })); notice = ''; refresh(); } catch (error) { notice = error.message; render(); } });
-  document.querySelector('#join')?.addEventListener('submit', async (event) => { event.preventDefault(); try { const data = new FormData(event.target); saveSession(await post('/api/join', { name: data.get('name'), code: data.get('code') })); notice = ''; refresh(); } catch (error) { notice = error.message; render(); } });
-  document.querySelector('#start')?.addEventListener('click', () => action('start'));
-  document.querySelectorAll('[data-task]').forEach((button) => button.addEventListener('click', () => action('selectTask', { taskId: button.dataset.task })));
-  document.querySelectorAll('[data-card]').forEach((button) => button.addEventListener('click', () => action('playCard', { cardId: button.dataset.card })));
-}
-function render() {
-  const content = session && room ? gameHtml() : lobbyHtml();
-  app.innerHTML = `<div class="shell">${notice ? `<div class="notice">${notice}<button id="dismiss">×</button></div>` : ''}${content}</div>`;
-  bind();
-}
-setInterval(() => {
-  if (session) refresh();
-}, 1200);
-refresh();
+async function refresh() { if (!session) return render(); try { const response = await fetch(`/api/room?code=${session.code}&playerId=${session.playerId}`); if (!response.ok) throw new Error('missing room'); room = await response.json(); } catch { localStorage.removeItem('deep-sea-crew-session'); session = null; notice = '방이 종료되었거나 서버가 재시작됐습니다.'; } render(); }
+async function action(name, payload = {}) { audio(); try { room = await post('/api/action', { ...session, action: name, ...payload }); if (name === 'playCard') playCardSound(); render(); } catch (error) { notice = error.message; render(); } }
+function lobbyHtml() { return `<section class="panel hero"><p class="eyebrow">COOPERATIVE TRICK-TAKING</p><h1>DEEP SEA CREW</h1><p>3–5인이 한 팀으로 심해 임무를 수행하는 온라인 프로토타입</p><form id="create"><input name="name" maxlength="18" placeholder="내 이름" required><label class="stage-input">시작 단계 <input name="stage" type="number" min="1" max="32" value="1" required></label><button>새 방 만들기</button></form><div class="divider">또는</div><form id="join"><input name="name" maxlength="18" placeholder="내 이름" required><input name="code" maxlength="5" placeholder="방 코드" required><button class="secondary">방 참가</button></form><p class="hint">시작 단계는 1–32 중에서 선택할 수 있습니다.</p></section>`; }
+function taskHtml(task) { const owner = room.players.find((member) => member.id === task.ownerId); const status = task.status === 'complete' ? '완료' : task.status === 'failed' ? '실패' : '진행 중'; return `<li class="task ${task.status}"><strong>${task.label}</strong><span>${owner ? owner.name : '미배정'} · ${status}</span></li>`; }
+function wonCardsHtml(state, member) { const cards = state.wonCards?.[member.id] ?? []; if (!cards.length) return '<div class="won-cards empty-won">획득 트릭 없음</div>'; const groups = suitOrder.map((suit) => { const values = cards.filter((card) => card.suit === suit).map((card) => card.rank).sort((a, b) => a - b); return values.length ? `<span class="won-group ${suit}">${labels[suit]} <b>${values.join(' · ')}</b></span>` : ''; }).join(''); return `<div class="won-cards">${groups}</div>`; }
+function crewHtml(state, isHost) { const rows = room.players.map((member) => `<div class="crew-row ${member.id === state?.captainId ? 'captain' : ''}"><div><span>${member.id === state?.captainId ? '★ ' : ''}${member.name}</span><small>${member.handCount}장${member.id === state?.turnId ? ' · 차례' : ''}</small>${state ? wonCardsHtml(state, member) : ''}</div></div>`).join(''); const start = room.status === 'lobby' ? `<button id="start" ${room.players.length < 3 || !isHost ? 'disabled' : ''}>${isHost ? `단계 ${room.stage} 시작` : '방장이 시작하기를 기다리는 중'}</button>` : ''; return `<aside class="panel crew"><h2>대원 ${room.players.length}/5</h2>${rows}${start}</aside>`; }
+function allocationHtml(state) { const comm = state.communication; if (comm?.mode !== 'limited' || room.status !== 'selecting') return ''; const isCaptain = state.captainId === session.playerId; const allowed = new Set(comm.allowedPlayerIds); const members = room.players.map((member) => `<button class="allocation ${allowed.has(member.id) ? 'selected' : ''}" data-grant="${member.id}" ${isCaptain ? '' : 'disabled'}>${member.name}${allowed.has(member.id) ? ' · 사용' : ''}</button>`).join(''); return `<div class="allocation-box"><strong>소나 표기 배정 ${allowed.size}/${comm.tokens}</strong><p>선장이 이 단계에서 표기할 대원을 지정합니다.</p>${members}</div>`; }
+function selectionHtml(state) { if (room.status !== 'selecting') return ''; const canPick = state.selectionTurnId === session.playerId; const picker = room.players.find((member) => member.id === state.selectionTurnId); const buttons = canPick ? state.selectedTasks.filter((task) => !task.ownerId).map((task) => `<button data-task="${task.id}" class="secondary">${task.label}</button>`).join('') : ''; return `<div class="selection"><p>${canPick ? '당신이 과제를 선택할 차례입니다.' : `${picker?.name ?? '대원'} 님이 선택 중입니다.`}</p>${buttons}${allocationHtml(state)}</div>`; }
+function signalHtml(state) { const signals = Object.entries(state.communication?.signals ?? {}); if (!signals.length) return ''; return `<div class="signals"><h3>소나 표기</h3>${signals.map(([id, signal]) => `<span class="signal ${signal.card.suit}">${room.players.find((member) => member.id === id)?.name} · ${cardName(signal.card)} <b>${signalLabel[signal.position]}</b></span>`).join('')}</div>`; }
+function trickHtml(state) { if (room.status !== 'playing' && room.status !== 'finished') return ''; const plays = state.currentTrick.length ? state.currentTrick.map((play) => `<div class="played"><span>${room.players.find((member) => member.id === play.playerId)?.name}</span><b class="${play.card.suit}">${cardName(play.card)}</b></div>`).join('') : '<p class="hint">이번 트릭의 선이 카드를 냅니다.</p>'; return `<div class="trick"><h2>현재 트릭</h2>${plays}${signalHtml(state)}</div>`; }
+function boardHtml(state) { if (room.status === 'lobby') return `<section class="panel board"><div class="empty">단계 ${room.stage} · 3명 이상 모이면 방장이 임무를 시작할 수 있습니다.</div></section>`; const phase = room.status === 'selecting' ? '과제 선택 중' : room.status === 'playing' ? `${state.completedTricks} 트릭 완료` : state.result === 'success' ? '임무 성공' : '임무 실패'; return `<section class="panel board"><div class="mission"><span>단계 ${state.stage}</span><b>난이도 ${state.missionDifficulty}</b><span>${phase}</span></div><h2>과제</h2><ul class="tasks">${state.selectedTasks.map(taskHtml).join('')}</ul>${selectionHtml(state)}${trickHtml(state)}</section>`; }
+function communicationHtml(state) { const comm = state.communication; if (room.status !== 'playing' || state.currentTrick.length || comm.mode === 'none' || comm.usedBy.includes(session.playerId) || !comm.allowedPlayerIds.includes(session.playerId)) return ''; const eligible = state.hand.filter((card) => card.suit !== 'sub').filter((card) => { const same = state.hand.filter((candidate) => candidate.suit === card.suit); const ranks = same.map((candidate) => candidate.rank); return same.length === 1 || card.rank === Math.min(...ranks) || card.rank === Math.max(...ranks); }); const text = comm.mode === 'currents' ? '가운데 표기' : '위=최고 · 가운데=유일 · 아래=최저'; return `<div class="communication"><h3>소나 표기</h3><p>${text}</p>${eligible.map((card) => { const same = state.hand.filter((candidate) => candidate.suit === card.suit); const position = same.length === 1 ? 'only' : card.rank === Math.max(...same.map((candidate) => candidate.rank)) ? 'high' : 'low'; return `<button class="signal-choice ${card.suit}" data-communicate="${card.id}"><b>${cardName(card)}</b><span>${signalLabel[comm.mode === 'currents' ? 'center' : position]}</span></button>`; }).join('')}</div>`; }
+function handHtml(state) { if (room.status !== 'playing' && room.status !== 'finished') return ''; const myTurn = state.turnId === session.playerId && room.status === 'playing'; const cards = state.hand.map((card) => `<button class="card ${card.suit}" data-card="${card.id}" ${myTurn ? '' : 'disabled'}><span>${card.suit === 'sub' ? '⚓' : labels[card.suit]}</span><b>${card.rank}</b></button>`).join(''); return `<section class="panel hand"><h2>내 손패 ${myTurn ? '— 카드를 내세요' : ''}</h2>${communicationHtml(state)}<div class="cards">${cards}</div>${state.reserveCard ? '<p class="hint">3인 게임: 미사용 카드 1장은 게임에서 제외됩니다.</p>' : ''}</section>`; }
+function settingsHtml() { return `<div class="settings"><button id="options" class="options-button" aria-expanded="${optionsOpen}">옵션</button>${optionsOpen ? `<label class="options-menu"><input id="sound-toggle" type="checkbox" ${soundEnabled ? 'checked' : ''}> 효과음</label>` : ''}</div>`; }
+function gameHtml() { const state = room.game; const isHost = room.hostId === session.playerId; return `<header><div><p class="eyebrow">ROOM ${room.code}</p><h1>심해 탐사선</h1></div><div class="header-controls"><div class="stage-badge">단계 ${room.stage}</div>${settingsHtml()}</div></header><section class="grid">${crewHtml(state, isHost)}${boardHtml(state)}</section>${handHtml(state)}<div id="deal-layer" aria-hidden="true"></div>`; }
+function bind() { document.querySelector('#dismiss')?.addEventListener('click', () => { notice = ''; render(); }); document.querySelector('#options')?.addEventListener('click', () => { optionsOpen = !optionsOpen; render(); }); document.querySelector('#sound-toggle')?.addEventListener('change', (event) => { soundEnabled = event.target.checked; localStorage.setItem('deep-sea-crew-sound', soundEnabled ? 'on' : 'off'); if (soundEnabled) audio(); }); document.querySelector('#create')?.addEventListener('submit', async (event) => { event.preventDefault(); try { const form = new FormData(event.target); saveSession(await post('/api/create', { name: form.get('name'), stage: form.get('stage') })); notice = ''; refresh(); } catch (error) { notice = error.message; render(); } }); document.querySelector('#join')?.addEventListener('submit', async (event) => { event.preventDefault(); try { const data = new FormData(event.target); saveSession(await post('/api/join', { name: data.get('name'), code: data.get('code') })); notice = ''; refresh(); } catch (error) { notice = error.message; render(); } }); document.querySelector('#start')?.addEventListener('click', () => action('start')); document.querySelectorAll('[data-task]').forEach((button) => button.addEventListener('click', () => action('selectTask', { taskId: button.dataset.task }))); document.querySelectorAll('[data-card]').forEach((button) => button.addEventListener('click', () => action('playCard', { cardId: button.dataset.card }))); document.querySelectorAll('[data-communicate]').forEach((button) => button.addEventListener('click', () => action('communicate', { cardId: button.dataset.communicate }))); document.querySelectorAll('[data-grant]').forEach((button) => button.addEventListener('click', () => action('grantCommunication', { targetPlayerId: button.dataset.grant }))); }
+function render() { const shouldDeal = session && room?.status === 'playing' && previousRoomStatus !== 'playing'; const content = session && room ? gameHtml() : lobbyHtml(); app.innerHTML = `<div class="shell">${notice ? `<div class="notice">${notice}<button id="dismiss">×</button></div>` : ''}${content}</div>`; bind(); previousRoomStatus = room?.status ?? null; if (shouldDeal) setTimeout(dealAnimation, 80); }
+setInterval(() => { if (session) refresh(); }, 1200); refresh();
