@@ -1,0 +1,10 @@
+.options-menu {
+  display: grid;
+  gap: .55rem;
+}
+
+.options-leave {
+  padding: .45rem .65rem;
+  background: #6d2634;
+  color: #ffe8ec;
+}
