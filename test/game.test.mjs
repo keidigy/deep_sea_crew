@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { canPlayCard, cardWins, communicationPosition, drawTasks, TASK_CATALOG, taskPassBudget, trickWinner } from '../lib/game.mjs';
+import { canPlayCard, cardWins, communicationPosition, drawTasks, TASK_CATALOG, taskPassBudget, timedPlayCard, trickWinner } from '../lib/game.mjs';
 
 test('must follow the lead suit when possible', () => {
   const hand = [{ suit: 'blue', rank: 2 }, { suit: 'green', rank: 1 }];
@@ -10,6 +10,14 @@ test('must follow the lead suit when possible', () => {
 test('a submarine may be played even when the lead color is held', () => {
   const hand = [{ suit: 'blue', rank: 2 }, { suit: 'sub', rank: 1 }];
   assert.equal(canPlayCard(hand, hand[1], 'blue'), true);
+});
+test('timed plays prioritize lead color, then submarines, then any card', () => {
+  const matching = [{ suit: 'blue', rank: 2 }, { suit: 'blue', rank: 6 }, { suit: 'sub', rank: 1 }];
+  assert.deepEqual(timedPlayCard(matching, 'blue', () => .9), matching[1]);
+  const submarines = [{ suit: 'green', rank: 4 }, { suit: 'sub', rank: 2 }, { suit: 'sub', rank: 4 }];
+  assert.deepEqual(timedPlayCard(submarines, 'blue', () => .8), submarines[2]);
+  const remaining = [{ suit: 'green', rank: 4 }, { suit: 'pink', rank: 2 }];
+  assert.deepEqual(timedPlayCard(remaining, 'blue', () => .8), remaining[1]);
 });
 test('submarine beats a color card', () => {
   assert.equal(cardWins({ suit: 'sub', rank: 1 }, { suit: 'pink', rank: 9 }, 'pink'), true);

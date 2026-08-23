@@ -2,7 +2,7 @@ import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { extname, join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { canPlayCard, communicationPosition, createDeck, drawTasks, missionForStage, shuffle, taskPassBudget, taskStatus, trickWinner } from './lib/game.mjs';
+import { canPlayCard, communicationPosition, createDeck, drawTasks, missionForStage, shuffle, taskPassBudget, taskStatus, timedPlayCard, trickWinner } from './lib/game.mjs';
 
 const root = join(process.cwd(), 'public');
 const publicRoot = resolve(root);
@@ -23,7 +23,7 @@ function publicRoom(room, viewerId) {
     code: room.code, stage: room.stage, version: room.version, status: room.status, hostId: room.hostId,
     players: room.players.map((member, seat) => ({ id: member.id, name: member.name, host: member.host, seat, handCount: game?.hands[member.id]?.length ?? 0 })),
     game: game && {
-      stage: game.stage, captainId: game.captainId, leaderId: game.leaderId, turnId: game.turnId, missionDifficulty: game.missionDifficulty, sonarEndsAt: game.sonarEndsAt,
+      stage: game.stage, captainId: game.captainId, leaderId: game.leaderId, turnId: game.turnId, turnEndsAt: game.turnEndsAt, missionDifficulty: game.missionDifficulty, sonarEndsAt: game.sonarEndsAt,
       selectedTasks: game.tasks.map((task) => ({ ...task, status: task.ownerId ? taskStatus(task, game, task.ownerId) : 'unassigned' })),
       selectionTurnId: game.selectionTurnId, passCount: game.passCount, passBudget: game.passBudget, passHistory: game.passHistory, canPassTask: canPassTask(room, viewerId), currentTrick: game.currentTrick.map((play) => ({ playerId: play.playerId, card: play.card })),
       trickHistory: game.trickHistory.map((trick) => ({ winnerId: trick.winnerId, cards: trick.cards })),
@@ -54,7 +54,7 @@ function startGame(room) {
     stage: mission.stage, hands, reserveCard, captainId: captain.id, leaderId: captain.id, turnId: captain.id, selectionTurnId: captain.id,
     missionDifficulty, tasks: drawTasks(count, missionDifficulty), passCount: 0, passBudget: 0, passHistory: [], currentTrick: [], trickHistory: [], completedTricks: 0,
     won: Object.fromEntries(room.players.map((member) => [member.id, []])), streaks: Object.fromEntries(room.players.map((member) => [member.id, 0])),
-    communication: { mode: mission.communication, tokens: mission.communication === 'limited' ? Math.max(0, count - 2) : count, usedBy: [], allowedPlayerIds: mission.communication === 'limited' ? [] : room.players.map((member) => member.id), signals: {} }, sonarEndsAt: null, result: null, finished: false
+    communication: { mode: mission.communication, tokens: mission.communication === 'limited' ? Math.max(0, count - 2) : count, usedBy: [], allowedPlayerIds: mission.communication === 'limited' ? [] : room.players.map((member) => member.id), signals: {} }, sonarEndsAt: null, turnEndsAt: null, result: null, finished: false
   };
   room.game.passBudget = taskPassBudget(count, room.game.tasks.length);
   room.status = 'selecting';
@@ -98,8 +98,15 @@ function passTask(room, actorId) {
   game.selectionTurnId = nextPlayer(room, actorId);
 }
 function advanceRoom(room) {
-  if (room.status === 'sonar' && Date.now() >= room.game.sonarEndsAt) {
-    room.status = 'playing'; room.game.sonarEndsAt = null; room.version += 1;
+  const game = room.game;
+  if (!game) return;
+  const now = Date.now();
+  if (room.status === 'sonar' && now >= game.sonarEndsAt) {
+    room.status = 'playing'; game.sonarEndsAt = null; game.turnEndsAt = now + 10_000; room.version += 1;
+  }
+  if (room.status === 'playing' && game.turnEndsAt && now >= game.turnEndsAt) {
+    const card = timedPlayCard(game.hands[game.turnId], game.currentTrick[0]?.card.suit);
+    if (card) { playCard(room, game.turnId, card.id); room.version += 1; }
   }
 }
 function playCard(room, actorId, cardId) {
@@ -112,14 +119,14 @@ function playCard(room, actorId, cardId) {
   const leadSuit = game.currentTrick[0]?.card.suit;
   if (!canPlayCard(hand, card, leadSuit)) throw new Error('같은 색 카드가 있다면 반드시 그 색을 내야 합니다.');
   hand.splice(index, 1); if (game.communication.signals[actorId]?.card.id === card.id) delete game.communication.signals[actorId]; game.currentTrick.push({ playerId: actorId, card });
-  if (game.currentTrick.length < room.players.length) { game.turnId = nextPlayer(room, actorId); return; }
+  if (game.currentTrick.length < room.players.length) { game.turnId = nextPlayer(room, actorId); game.turnEndsAt = Date.now() + 10_000; return; }
   const winner = trickWinner(game.currentTrick);
   game.won[winner.playerId].push(game.currentTrick.map((play) => play.card));
   game.streaks = Object.fromEntries(room.players.map((member) => [member.id, member.id === winner.playerId ? game.streaks[member.id] + 1 : 0]));
   game.trickHistory.push({ winnerId: winner.playerId, cards: game.currentTrick });
-  game.completedTricks += 1; game.currentTrick = []; game.leaderId = winner.playerId; game.turnId = winner.playerId;
+  game.completedTricks += 1; game.currentTrick = []; game.leaderId = winner.playerId; game.turnId = winner.playerId; game.turnEndsAt = Date.now() + 10_000;
   const allHandsEmpty = room.players.every((member) => game.hands[member.id].length === 0);
-  if (allHandsEmpty) { game.finished = true; game.result = game.tasks.every((task) => taskStatus(task, game, task.ownerId) === 'complete') ? 'success' : 'fail'; room.status = 'finished'; }
+  if (allHandsEmpty) { game.finished = true; game.result = game.tasks.every((task) => taskStatus(task, game, task.ownerId) === 'complete') ? 'success' : 'fail'; room.status = 'finished'; game.turnEndsAt = null; }
 }
 function removeLobbyPlayer(room, playerId) {
   const leavingIndex = room.players.findIndex((member) => member.id === playerId);
@@ -234,6 +241,7 @@ const server = createServer(async (request, response) => {
 const port = Number(process.env.PORT || 3000);
 server.listen(port, '0.0.0.0', () => console.log(`Deep Sea Crew listening on ${port}`));
 setInterval(evictInactiveLobbyPlayers, 3_000).unref();
+setInterval(() => { for (const room of rooms.values()) advanceRoom(room); }, 250).unref();
 
 function shutdown(signal) {
   console.log(`${signal} received; stopping HTTP server.`);
