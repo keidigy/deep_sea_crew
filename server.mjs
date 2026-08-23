@@ -8,7 +8,8 @@ const root = join(process.cwd(), 'public');
 const publicRoot = resolve(root);
 const rooms = new Map();
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8' };
-const PRESENCE_TIMEOUT_MS = 15_000;
+// 대기실 참가자가 잠시 네트워크를 잃어도 초대 방이 바로 사라지지 않도록 5분간 유지한다.
+const PRESENCE_TIMEOUT_MS = 5 * 60_000;
 
 function roomCode() {
   let code;
