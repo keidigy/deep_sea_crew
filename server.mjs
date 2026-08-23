@@ -145,7 +145,8 @@ function playCard(room, actorId, cardId) {
   const winner = trickWinner(game.currentTrick);
   game.won[winner.playerId].push(game.currentTrick.map((play) => play.card));
   game.streaks = Object.fromEntries(room.players.map((member) => [member.id, member.id === winner.playerId ? game.streaks[member.id] + 1 : 0]));
-  game.trickHistory.push({ winnerId: winner.playerId, cards: game.currentTrick });
+  // 과제 판정과 클라이언트 애니메이션이 같은 카드 형태를 보도록 플레이 기록에서는 카드만 보관한다.
+  game.trickHistory.push({ winnerId: winner.playerId, cards: game.currentTrick.map((play) => play.card) });
   game.completedTricks += 1; game.currentTrick = []; game.leaderId = winner.playerId; game.turnId = winner.playerId; game.turnEndsAt = Date.now() + 30_000;
   const progress = taskSetStatus(game.tasks, game);
   if (progress.failedTask) { finishFailedMission(room, `과제 실패: ${progress.failedTask.label}`); return; }

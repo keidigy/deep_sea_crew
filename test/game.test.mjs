@@ -40,6 +40,13 @@ test('a fully completed task set stays successful when the last trick finalizes 
   assert.equal(result.failedTask, null);
   assert.equal(result.allComplete, true);
 });
+test('a server-shaped completed trick resolves card and pattern tasks immediately', () => {
+  const cards = [{ playerId: 'a', card: { suit: 'blue', rank: 3 } }, { playerId: 'b', card: { suit: 'green', rank: 5 } }, { playerId: 'c', card: { suit: 'pink', rank: 7 } }];
+  const state = { trickHistory: [{ winnerId: 'a', cards: cards.map((play) => play.card) }], won: { a: [cards.map((play) => play.card)], b: [], c: [] }, hands: { a: [], b: [], c: [] }, streaks: { a: 1, b: 0, c: 0 }, completedTricks: 1, finished: false };
+  const result = taskSetStatus([{ type: 'winCard', suit: 'blue', rank: 3, ownerId: 'a' }, { type: 'atLeastTricks', amount: 1, ownerId: 'a' }, { type: 'twoSuitsTrick', ownerId: 'a' }], state);
+  assert.equal(result.failedTask, null);
+  assert.equal(result.allComplete, true);
+});
 test('final-only tasks remain active before the last trick and do not trigger a false failure', () => {
   const state = { trickHistory: [{ winnerId: 'a', cards: [{ suit: 'blue', rank: 1 }] }], won: { a: [[{ suit: 'blue', rank: 1 }]], b: [], c: [] }, hands: { a: [{ suit: 'green', rank: 2 }], b: [{ suit: 'pink', rank: 3 }], c: [{ suit: 'yellow', rank: 4 }] }, streaks: { a: 1, b: 0, c: 0 }, completedTricks: 1, finished: false };
   const result = taskSetStatus([{ type: 'lastTrick', ownerId: 'a' }, { type: 'avoidSub', ownerId: 'a' }, { type: 'exactTricks', amount: 1, ownerId: 'a' }], state);
