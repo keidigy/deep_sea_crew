@@ -270,7 +270,7 @@ const server = createServer(async (request, response) => {
     if (filePath !== publicRoot && !filePath.startsWith(`${publicRoot}/`)) {
       response.writeHead(403); response.end('Forbidden'); return;
     }
-    const file = await readFile(filePath); response.writeHead(200, { 'content-type': MIME[extname(path)] ?? 'application/octet-stream' }); response.end(file);
+    const file = await readFile(filePath); response.writeHead(200, { 'content-type': MIME[extname(path)] ?? 'application/octet-stream', 'cache-control': 'no-store' }); response.end(file);
   } catch (error) {
     if (error.code === 'ENOENT') { response.writeHead(404); response.end('Not found'); return; }
     send(response, 400, { error: error.message ?? '요청을 처리하지 못했습니다.' });

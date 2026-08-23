@@ -1,6 +1,6 @@
 const app = document.querySelector('#app');
 let session = JSON.parse(localStorage.getItem('deep-sea-crew-session') || 'null');
-let room = null; let notice = ''; let optionsOpen = false; let centerWarning = ''; let centerWarningTimer = null; let phaseGuide = ''; let phaseGuideTimer = null; let previousPhaseKey = null;
+let room = null; let notice = ''; let optionsOpen = false; let centerWarning = ''; let centerWarningTimer = null; let phaseGuide = ''; let phaseGuideTimer = null; let previousPhaseKey = null; const announcedGuideKeys = new Set();
 let inviteCode = /^[A-Z0-9]{5}$/.test(new URLSearchParams(window.location.search).get('join')?.toUpperCase() ?? '') ? new URLSearchParams(window.location.search).get('join').toUpperCase() : null;
 let copyAlertOpen = false; let missingRoomAlertOpen = false;
 let soundEnabled = localStorage.getItem('deep-sea-crew-sound') !== 'off';
@@ -30,7 +30,7 @@ function dealAnimation() { const layer = document.querySelector('#deal-layer'); 
 
 async function refresh() { if (!session) return render(); try { const response = await fetch(`/api/room?code=${session.code}&playerId=${session.playerId}`); if (!response.ok) throw new Error('missing room'); room = await response.json(); } catch { localStorage.removeItem('deep-sea-crew-session'); session = null; notice = '방이 종료되었거나 서버가 재시작됐습니다.'; } render(); }
 function showCenterWarning(message) { clearTimeout(centerWarningTimer); centerWarning = message; render(); centerWarningTimer = setTimeout(() => { centerWarning = ''; render(); }, 2_600); }
-function guideKey() { if (!session || !room) return null; if (room.status === 'selecting') return `selecting:${room.game.selectionTurnId}`; if (room.status === 'playing') return `playing:${room.game.completedTricks}`; return room.status; }
+function guideKey() { if (!session || !room) return null; const prefix = `${room.code}:${room.stage}:`; if (room.status === 'selecting') return `${prefix}selecting:${room.game.selectionTurnId}`; if (room.status === 'playing') return `${prefix}playing:${room.game.completedTricks}`; return `${prefix}${room.status}`; }
 function guideMessage() { const state = room?.game; if (!state) return ''; if (room.status === 'briefing') return '임무 설명과 과제 난이도를 확인하세요. 5초 뒤 과제 선택이 시작됩니다.'; if (room.status === 'selecting') return state.selectionTurnId === session.playerId ? '당신의 차례입니다. 과제 카드 하나를 선택하거나 패스하세요.' : '다른 대원이 과제를 선택 중입니다. 손패와 과제를 확인하세요.'; if (room.status === 'playing') { const player = room.players.find((member) => member.id === state.turnId); return state.turnId === session.playerId ? '당신의 차례입니다. 30초 안에 카드를 내세요. 소나 표기는 원할 때 한 번 선택할 수 있습니다.' : `${player?.name ?? '다른 대원'} 님의 차례입니다. 테이블과 과제를 확인하세요.`; } return ''; }
 function showPhaseGuide(message) { clearTimeout(phaseGuideTimer); phaseGuide = message; phaseGuideTimer = setTimeout(() => { phaseGuide = ''; render(); }, 3_600); }
 async function action(name, payload = {}) { audio(); try { room = await post('/api/action', { ...session, action: name, ...payload }); if (name === 'playCard') playCardSound(); render(); } catch (error) { if (error.message === '같은 색 카드가 있다면 반드시 그 색을 내야 합니다.') showCenterWarning(error.message); else { notice = error.message; render(); } } }
@@ -92,7 +92,7 @@ function render() {
   const shouldCapture = session && room?.game && completedTricks > previousCompletedTricks;
   const currentTrickCardIds = new Set(room?.game?.currentTrick.map((play) => play.card.id) ?? []);
   const currentGuideKey = guideKey();
-  if (currentGuideKey && currentGuideKey !== previousPhaseKey) showPhaseGuide(guideMessage());
+  if (currentGuideKey && currentGuideKey !== previousPhaseKey && !announcedGuideKeys.has(currentGuideKey)) { announcedGuideKeys.add(currentGuideKey); showPhaseGuide(guideMessage()); }
   animatedTrickCardIds = new Set([...currentTrickCardIds].filter((id) => !previousTrickCardIds.has(id)));
   const content = session && room ? gameHtml() : lobbyHtml();
   app.innerHTML = `<div class="shell">${WARNING_STYLES}${PHASE_GUIDE_STYLES}${notice ? `<div class="notice">${notice}<button id="dismiss">×</button></div>` : ''}${content}${inviteJoinHtml()}${copyAlertHtml()}${missingRoomAlertHtml()}${phaseGuide ? `<div class="phase-guide" role="status">${phaseGuide}</div>` : ''}${centerWarning ? `<div class="center-warning" role="alert">${centerWarning}</div>` : ''}</div>`;
