@@ -2,7 +2,7 @@ import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { extname, join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { canPlayCard, communicationPosition, createDeck, drawTasks, missionForStage, shuffle, taskPassBudget, taskStatus, timedPlayCard, trickWinner } from './lib/game.mjs';
+import { canPlayCard, communicationPosition, createDeck, drawTasks, missionForStage, shuffle, taskPassBudget, taskSetStatus, taskStatus, timedPlayCard, trickWinner } from './lib/game.mjs';
 
 const root = join(process.cwd(), 'public');
 const publicRoot = resolve(root);
@@ -72,7 +72,7 @@ function grantCommunication(room, actorId, playerId) {
 }
 function communicate(room, actorId, cardId) {
   const game = room.game; const comm = game.communication;
-  if (room.status !== 'sonar' || Date.now() >= game.sonarEndsAt) throw new Error('소나 표기 시간은 종료되었습니다.');
+  if (room.status !== 'playing') throw new Error('카드 내기 중에만 소나 표기를 할 수 있습니다.');
   if (comm.mode === 'none' || !comm.allowedPlayerIds.includes(actorId) || comm.usedBy.includes(actorId)) throw new Error('이 단계에서는 소나 표기를 사용할 수 없습니다.');
   const hand = game.hands[actorId]; const card = hand.find((candidate) => candidate.id === cardId); const position = card && communicationPosition(hand, card);
   if (!position) throw new Error('색 카드 중 해당 색의 최고·유일·최저 카드만 표기할 수 있습니다.');
@@ -87,7 +87,7 @@ function selectTask(room, actorId, taskId) {
   const task = game.tasks.find((candidate) => candidate.id === taskId && !candidate.ownerId);
   if (!task) throw new Error('선택할 수 없는 과제입니다.');
   task.ownerId = actorId;
-  if (game.tasks.every((candidate) => candidate.ownerId)) { room.status = 'sonar'; game.selectionTurnId = null; game.sonarEndsAt = Date.now() + 10_000; return; }
+  if (game.tasks.every((candidate) => candidate.ownerId)) { room.status = 'playing'; game.selectionTurnId = null; game.turnEndsAt = Date.now() + 30_000; return; }
   game.selectionTurnId = nextPlayer(room, actorId);
 }
 function passTask(room, actorId) {
@@ -110,9 +110,6 @@ function advanceRoom(room) {
   }
   if (room.status === 'briefing' && now >= game.briefingEndsAt) {
     room.status = 'selecting'; game.briefingEndsAt = null; room.version += 1;
-  }
-  if (room.status === 'sonar' && now >= game.sonarEndsAt) {
-    room.status = 'playing'; game.sonarEndsAt = null; game.turnEndsAt = now + 10_000; room.version += 1;
   }
   if (room.status === 'playing' && game.turnEndsAt && now >= game.turnEndsAt) {
     const card = timedPlayCard(game.hands[game.turnId], game.currentTrick[0]?.card.suit);
@@ -142,22 +139,21 @@ function playCard(room, actorId, cardId) {
   const card = hand[index];
   const leadSuit = game.currentTrick[0]?.card.suit;
   if (!canPlayCard(hand, card, leadSuit)) throw new Error('같은 색 카드가 있다면 반드시 그 색을 내야 합니다.');
-  hand.splice(index, 1); if (game.communication.signals[actorId]?.card.id === card.id) delete game.communication.signals[actorId]; game.currentTrick.push({ playerId: actorId, card });
-  if (game.currentTrick.length < room.players.length) { game.turnId = nextPlayer(room, actorId); game.turnEndsAt = Date.now() + 10_000; return; }
+  hand.splice(index, 1); game.currentTrick.push({ playerId: actorId, card });
+  if (game.currentTrick.length < room.players.length) { game.turnId = nextPlayer(room, actorId); game.turnEndsAt = Date.now() + 30_000; return; }
   const winner = trickWinner(game.currentTrick);
   game.won[winner.playerId].push(game.currentTrick.map((play) => play.card));
   game.streaks = Object.fromEntries(room.players.map((member) => [member.id, member.id === winner.playerId ? game.streaks[member.id] + 1 : 0]));
   game.trickHistory.push({ winnerId: winner.playerId, cards: game.currentTrick });
-  game.completedTricks += 1; game.currentTrick = []; game.leaderId = winner.playerId; game.turnId = winner.playerId; game.turnEndsAt = Date.now() + 10_000;
-  const failedTask = game.tasks.find((task) => task.ownerId && taskStatus(task, game, task.ownerId) === 'failed');
-  if (failedTask) { finishFailedMission(room, `과제 실패: ${failedTask.label}`); return; }
-  const allTasksComplete = game.tasks.every((task) => task.ownerId && taskStatus(task, game, task.ownerId) === 'complete');
-  if (allTasksComplete) { finishSuccessfulMission(room); return; }
+  game.completedTricks += 1; game.currentTrick = []; game.leaderId = winner.playerId; game.turnId = winner.playerId; game.turnEndsAt = Date.now() + 30_000;
+  const progress = taskSetStatus(game.tasks, game);
+  if (progress.failedTask) { finishFailedMission(room, `과제 실패: ${progress.failedTask.label}`); return; }
+  if (progress.allComplete) { finishSuccessfulMission(room); return; }
   const allHandsEmpty = room.players.every((member) => game.hands[member.id].length === 0);
   if (allHandsEmpty) {
     // 일부 과제는 마지막 트릭이 끝난 뒤에만 완료 여부를 확정할 수 있다.
     game.finished = true;
-    const success = game.tasks.every((task) => taskStatus(task, game, task.ownerId) === 'complete');
+    const success = taskSetStatus(game.tasks, game).allComplete;
     game.finished = false;
     if (success) finishSuccessfulMission(room);
     else finishFailedMission(room, '마지막 트릭까지 과제를 완료하지 못했습니다.');

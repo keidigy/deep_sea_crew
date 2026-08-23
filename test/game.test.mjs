@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { canPlayCard, cardWins, communicationPosition, drawTasks, TASK_CATALOG, taskPassBudget, taskStatus, timedPlayCard, trickWinner } from '../lib/game.mjs';
+import { canPlayCard, cardWins, communicationPosition, drawTasks, TASK_CATALOG, taskPassBudget, taskSetStatus, taskStatus, timedPlayCard, trickWinner } from '../lib/game.mjs';
 
 test('must follow the lead suit when possible', () => {
   const hand = [{ suit: 'blue', rank: 2 }, { suit: 'green', rank: 1 }];
@@ -23,6 +23,28 @@ test('task failure is detected immediately when its target goes to another playe
   const state = { trickHistory: [{ winnerId: 'b', cards: [{ suit: 'blue', rank: 4 }] }], won: { a: [], b: [[{ suit: 'blue', rank: 4 }]] }, hands: { a: [], b: [] }, completedTricks: 1, finished: false };
   assert.equal(taskStatus({ type: 'winCard', suit: 'blue', rank: 4 }, state, 'a'), 'failed');
   assert.equal(taskStatus({ type: 'parityTrick', parity: 'even' }, state, 'a'), 'failed');
+});
+test('a fully completed task set stays successful when the last trick finalizes it', () => {
+  const first = [{ suit: 'blue', rank: 1 }, { suit: 'green', rank: 3 }, { suit: 'pink', rank: 5 }];
+  const middle = [{ suit: 'yellow', rank: 2 }, { suit: 'yellow', rank: 4 }, { suit: 'sub', rank: 1 }];
+  const last = [{ suit: 'blue', rank: 9 }, { suit: 'pink', rank: 7 }, { suit: 'green', rank: 8 }];
+  const state = { trickHistory: [{ winnerId: 'a', cards: first }, { winnerId: 'b', cards: middle }, { winnerId: 'a', cards: last }], won: { a: [first, last], b: [middle], c: [] }, hands: { a: [], b: [], c: [] }, streaks: { a: 1, b: 0, c: 0 }, completedTricks: 3, finished: true };
+  const tasks = [
+    { type: 'winCard', suit: 'blue', rank: 1, ownerId: 'a' }, { type: 'winCard', suit: 'blue', rank: 9, when: 'last', ownerId: 'a' },
+    { type: 'firstTrick', ownerId: 'a' }, { type: 'lastTrick', ownerId: 'a' }, { type: 'avoidSuit', suit: 'yellow', ownerId: 'a' },
+    { type: 'exactTricks', amount: 2, ownerId: 'a' }, { type: 'mostTricks', ownerId: 'a' }, { type: 'firstAndLast', ownerId: 'a' },
+    { type: 'parityTrick', parity: 'odd', ownerId: 'a' }, { type: 'balancedTrick', suits: ['blue', 'pink'], ownerId: 'a' },
+    { type: 'twoSuitsTrick', ownerId: 'a' }
+  ];
+  const result = taskSetStatus(tasks, state);
+  assert.equal(result.failedTask, null);
+  assert.equal(result.allComplete, true);
+});
+test('final-only tasks remain active before the last trick and do not trigger a false failure', () => {
+  const state = { trickHistory: [{ winnerId: 'a', cards: [{ suit: 'blue', rank: 1 }] }], won: { a: [[{ suit: 'blue', rank: 1 }]], b: [], c: [] }, hands: { a: [{ suit: 'green', rank: 2 }], b: [{ suit: 'pink', rank: 3 }], c: [{ suit: 'yellow', rank: 4 }] }, streaks: { a: 1, b: 0, c: 0 }, completedTricks: 1, finished: false };
+  const result = taskSetStatus([{ type: 'lastTrick', ownerId: 'a' }, { type: 'avoidSub', ownerId: 'a' }, { type: 'exactTricks', amount: 1, ownerId: 'a' }], state);
+  assert.equal(result.failedTask, null);
+  assert.equal(result.allComplete, false);
 });
 test('submarine beats a color card', () => {
   assert.equal(cardWins({ suit: 'sub', rank: 1 }, { suit: 'pink', rank: 9 }, 'pink'), true);

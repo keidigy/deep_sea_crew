@@ -1,0 +1,15 @@
+.cards {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0 0 .7rem;
+  touch-action: pan-x;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
+  scroll-snap-type: x proximity;
+  scrollbar-width: thin;
+}
+
+.card {
+  flex: 0 0 auto;
+  scroll-snap-align: start;
+}
