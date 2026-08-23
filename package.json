@@ -1,14 +1,55 @@
 {
   "name": "deep-sea-crew",
+  "version": "1.0.0",
+  "description": "Deep Sea Crew local multiplayer host application",
+  "author": "keidigy",
+  "main": "desktop/main.cjs",
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "node --check server.mjs && node --check public/app-fixed.js",
+    "build": "node --check server.mjs && node --check public/app-fixed.js && node --check desktop/main.cjs && node --check desktop/preload.cjs && node --check desktop/renderer/renderer.js",
     "start": "node server.mjs",
     "dev": "node server.mjs",
-    "test": "node --test"
+    "test": "node --test",
+    "desktop:dev": "electron .",
+    "desktop:build:mac": "electron-builder --mac dmg --arm64"
   },
   "engines": {
     "node": ">=20"
+  },
+  "devDependencies": {
+    "electron": "43.4.1",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "com.keidigy.deepseacrew.host",
+    "productName": "Deep Sea Crew Host",
+    "asar": true,
+    "asarUnpack": [
+      "server.mjs",
+      "lib/**/*",
+      "public/**/*"
+    ],
+    "files": [
+      "desktop/**/*",
+      "server.mjs",
+      "lib/**/*",
+      "public/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.games",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ]
+    },
+    "dmg": {
+      "title": "Deep Sea Crew Host"
+    }
   }
 }

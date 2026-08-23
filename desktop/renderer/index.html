@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Deep Sea Crew Host</title>
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <main>
+      <p class="eyebrow">DEEP SEA CREW · HOST</p>
+      <h1>게임 서버 제어실</h1>
+      <p class="intro">이 Mac이 방의 서버가 됩니다. 외부 공개는 Cloudflare 로그인과 별도 승인 후에만 시작됩니다.</p>
+      <section class="card"><div class="heading"><div><h2>로컬 게임 서버</h2><p id="server-status">상태 확인 중…</p></div><span id="server-badge" class="badge">확인 중</span></div><code>http://localhost:3001</code><div class="actions"><button id="start-server">서버 실행</button><button id="stop-server" class="secondary">서버 종료</button><button id="open-local" class="ghost">게임 열기</button></div></section>
+      <section class="card"><div class="heading"><div><h2>Cloudflare 외부 공유</h2><p id="cloudflare-status">외부 공개는 꺼져 있습니다.</p></div><span id="cloudflare-badge" class="badge muted">비공개</span></div><p class="note">로그인은 계정과 도메인 권한을 확인합니다. 외부 공개는 그 뒤 다시 한 번 승인해야 합니다.</p><div class="actions"><button id="login-cloudflare" class="secondary">Cloudflare 로그인</button><button id="share-cloudflare">외부 공개 승인</button><button id="stop-cloudflare" class="danger">외부 공개 종료</button></div><div id="invite" class="invite" hidden><strong>외부 초대 주소</strong><code id="external-url"></code><button id="copy-url" class="ghost">주소 복사</button></div></section>
+      <p id="message" class="message"></p>
+      <p class="footnote">Cloudflare 외부 공유에는 Mac에 <code>cloudflared</code>가 설치되어 있어야 합니다.</p>
+    </main>
+    <script src="./renderer.js"></script>
+  </body>
+</html>
