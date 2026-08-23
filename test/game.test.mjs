@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { canPlayCard, cardWins, communicationPosition, drawTasks, TASK_CATALOG, taskPassBudget, timedPlayCard, trickWinner } from '../lib/game.mjs';
+import { canPlayCard, cardWins, communicationPosition, drawTasks, TASK_CATALOG, taskPassBudget, taskStatus, timedPlayCard, trickWinner } from '../lib/game.mjs';
 
 test('must follow the lead suit when possible', () => {
   const hand = [{ suit: 'blue', rank: 2 }, { suit: 'green', rank: 1 }];
@@ -18,6 +18,11 @@ test('timed plays prioritize lead color, then submarines, then any card', () => 
   assert.deepEqual(timedPlayCard(submarines, 'blue', () => .8), submarines[2]);
   const remaining = [{ suit: 'green', rank: 4 }, { suit: 'pink', rank: 2 }];
   assert.deepEqual(timedPlayCard(remaining, 'blue', () => .8), remaining[1]);
+});
+test('task failure is detected immediately when its target goes to another player', () => {
+  const state = { trickHistory: [{ winnerId: 'b', cards: [{ suit: 'blue', rank: 4 }] }], won: { a: [], b: [[{ suit: 'blue', rank: 4 }]] }, hands: { a: [], b: [] }, completedTricks: 1, finished: false };
+  assert.equal(taskStatus({ type: 'winCard', suit: 'blue', rank: 4 }, state, 'a'), 'failed');
+  assert.equal(taskStatus({ type: 'parityTrick', parity: 'even' }, state, 'a'), 'failed');
 });
 test('submarine beats a color card', () => {
   assert.equal(cardWins({ suit: 'sub', rank: 1 }, { suit: 'pink', rank: 9 }, 'pink'), true);
