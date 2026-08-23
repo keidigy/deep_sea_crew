@@ -20,10 +20,10 @@ function publicRoom(room, viewerId) {
   advanceRoom(room);
   const game = room.game;
   return {
-    code: room.code, stage: room.stage, version: room.version, status: room.status, hostId: room.hostId,
+    code: room.code, stage: room.stage, version: room.version, status: room.status, hostId: room.hostId, initialHostId: room.initialHostId, campaign: room.campaign,
     players: room.players.map((member, seat) => ({ id: member.id, name: member.name, host: member.host, seat, handCount: game?.hands[member.id]?.length ?? 0 })),
     game: game && {
-      stage: game.stage, captainId: game.captainId, leaderId: game.leaderId, turnId: game.turnId, turnEndsAt: game.turnEndsAt, missionDifficulty: game.missionDifficulty, sonarEndsAt: game.sonarEndsAt,
+      stage: game.stage, captainId: game.captainId, leaderId: game.leaderId, turnId: game.turnId, turnEndsAt: game.turnEndsAt, missionDifficulty: game.missionDifficulty, sonarEndsAt: game.sonarEndsAt, briefingEndsAt: game.briefingEndsAt, failureReason: game.failureReason,
       selectedTasks: game.tasks.map((task) => ({ ...task, status: task.ownerId ? taskStatus(task, game, task.ownerId) : 'unassigned' })),
       selectionTurnId: game.selectionTurnId, passCount: game.passCount, passBudget: game.passBudget, passHistory: game.passHistory, canPassTask: canPassTask(room, viewerId), currentTrick: game.currentTrick.map((play) => ({ playerId: play.playerId, card: play.card })),
       trickHistory: game.trickHistory.map((trick) => ({ winnerId: trick.winnerId, cards: trick.cards })),
@@ -54,10 +54,10 @@ function startGame(room) {
     stage: mission.stage, hands, reserveCard, captainId: captain.id, leaderId: captain.id, turnId: captain.id, selectionTurnId: captain.id,
     missionDifficulty, tasks: drawTasks(count, missionDifficulty), passCount: 0, passBudget: 0, passHistory: [], currentTrick: [], trickHistory: [], completedTricks: 0,
     won: Object.fromEntries(room.players.map((member) => [member.id, []])), streaks: Object.fromEntries(room.players.map((member) => [member.id, 0])),
-    communication: { mode: mission.communication, tokens: mission.communication === 'limited' ? Math.max(0, count - 2) : count, usedBy: [], allowedPlayerIds: mission.communication === 'limited' ? [] : room.players.map((member) => member.id), signals: {} }, sonarEndsAt: null, turnEndsAt: null, result: null, finished: false
+    communication: { mode: mission.communication, tokens: mission.communication === 'limited' ? Math.max(0, count - 2) : count, usedBy: [], allowedPlayerIds: mission.communication === 'limited' ? [] : room.players.map((member) => member.id), signals: {} }, briefingEndsAt: Date.now() + 5_000, sonarEndsAt: null, turnEndsAt: null, result: null, failureReason: null, finished: false
   };
   room.game.passBudget = taskPassBudget(count, room.game.tasks.length);
-  room.status = 'selecting';
+  room.status = 'briefing';
 }
 function grantCommunication(room, actorId, playerId) {
   const game = room.game;
@@ -101,6 +101,9 @@ function advanceRoom(room) {
   const game = room.game;
   if (!game) return;
   const now = Date.now();
+  if (room.status === 'briefing' && now >= game.briefingEndsAt) {
+    room.status = 'selecting'; game.briefingEndsAt = null; room.version += 1;
+  }
   if (room.status === 'sonar' && now >= game.sonarEndsAt) {
     room.status = 'playing'; game.sonarEndsAt = null; game.turnEndsAt = now + 10_000; room.version += 1;
   }
@@ -108,6 +111,12 @@ function advanceRoom(room) {
     const card = timedPlayCard(game.hands[game.turnId], game.currentTrick[0]?.card.suit);
     if (card) { playCard(room, game.turnId, card.id); room.version += 1; }
   }
+}
+function finishFailedMission(room, reason) {
+  const game = room.game;
+  if (game.finished) return;
+  game.finished = true; game.result = 'fail'; game.failureReason = reason; game.turnEndsAt = null; game.sonarEndsAt = null;
+  room.status = 'finished'; room.campaign.failures += 1;
 }
 function playCard(room, actorId, cardId) {
   const game = room.game;
@@ -125,8 +134,10 @@ function playCard(room, actorId, cardId) {
   game.streaks = Object.fromEntries(room.players.map((member) => [member.id, member.id === winner.playerId ? game.streaks[member.id] + 1 : 0]));
   game.trickHistory.push({ winnerId: winner.playerId, cards: game.currentTrick });
   game.completedTricks += 1; game.currentTrick = []; game.leaderId = winner.playerId; game.turnId = winner.playerId; game.turnEndsAt = Date.now() + 10_000;
+  const failedTask = game.tasks.find((task) => task.ownerId && taskStatus(task, game, task.ownerId) === 'failed');
+  if (failedTask) { finishFailedMission(room, `과제 실패: ${failedTask.label}`); return; }
   const allHandsEmpty = room.players.every((member) => game.hands[member.id].length === 0);
-  if (allHandsEmpty) { game.finished = true; game.result = game.tasks.every((task) => taskStatus(task, game, task.ownerId) === 'complete') ? 'success' : 'fail'; room.status = 'finished'; game.turnEndsAt = null; }
+  if (allHandsEmpty) { game.finished = true; const success = game.tasks.every((task) => taskStatus(task, game, task.ownerId) === 'complete'); game.result = success ? 'success' : 'fail'; room.status = 'finished'; game.turnEndsAt = null; if (!success) { game.failureReason = '마지막 트릭까지 과제를 완료하지 못했습니다.'; room.campaign.failures += 1; } }
 }
 function removeLobbyPlayer(room, playerId) {
   const leavingIndex = room.players.findIndex((member) => member.id === playerId);
@@ -179,6 +190,8 @@ function mutate(code, actorId, action, payload) {
   advanceRoom(room);
   if (!room.players.some((member) => member.id === actorId)) throw new Error('이 방의 대원이 아닙니다.');
   if (action === 'start') { if (actorId !== room.hostId) throw new Error('방장만 시작할 수 있습니다.'); if (room.players.length < 3) throw new Error('최소 3명이 필요합니다.'); startGame(room); }
+  if (action === 'retryMission') { if (actorId !== room.initialHostId) throw new Error('처음 방을 만든 방장만 재시도할 수 있습니다.'); if (room.status !== 'finished' || room.game?.result !== 'fail') throw new Error('실패한 임무만 재시도할 수 있습니다.'); startGame(room); }
+  if (action === 'resetMission') { if (actorId !== room.initialHostId) throw new Error('처음 방을 만든 방장만 임무를 재설정할 수 있습니다.'); if (room.status !== 'finished' || room.game?.result !== 'fail') throw new Error('실패한 임무만 재설정할 수 있습니다.'); room.stage = room.campaign.initialStage; room.campaign.stagesTraversed = 1; startGame(room); }
   if (action === 'selectTask') selectTask(room, actorId, payload.taskId);
   if (action === 'passTask') passTask(room, actorId);
   if (action === 'grantCommunication') grantCommunication(room, actorId, payload.targetPlayerId);
@@ -207,7 +220,7 @@ const server = createServer(async (request, response) => {
     if (request.method === 'POST' && url.pathname === '/api/create') {
       const data = await body(request); const id = randomUUID(); const code = roomCode();
       const stage = Math.max(1, Math.min(32, Number(data.stage) || 1));
-      const host = player(id, data.name, true); rooms.set(code, { code, stage, players: [host], hostId: id, status: 'lobby', game: null, version: 1 });
+      const host = player(id, data.name, true); rooms.set(code, { code, stage, players: [host], hostId: id, initialHostId: id, campaign: { initialStage: stage, stagesTraversed: 1, failures: 0 }, status: 'lobby', game: null, version: 1 });
       return send(response, 201, { code, playerId: id });
     }
     if (request.method === 'POST' && url.pathname === '/api/join') {
