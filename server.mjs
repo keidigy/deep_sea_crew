@@ -53,7 +53,7 @@ function startGame(room) {
   const missionDifficulty = mission.difficulty;
   room.game = {
     stage: mission.stage, hands, reserveCard, captainId: captain.id, leaderId: captain.id, turnId: captain.id, selectionTurnId: captain.id,
-    missionDifficulty, tasks: drawTasks(count, missionDifficulty), passCount: 0, passBudget: 0, passHistory: [], currentTrick: [], trickHistory: [], completedTricks: 0, totalTricks: deck.length / count,
+    missionDifficulty, tasks: drawTasks(count, missionDifficulty, hands), passCount: 0, passBudget: 0, passHistory: [], trickHistory: [], currentTrick: [], completedTricks: 0, totalTricks: deck.length / count,
     won: Object.fromEntries(room.players.map((member) => [member.id, []])), streaks: Object.fromEntries(room.players.map((member) => [member.id, 0])),
     communication: { mode: mission.communication, tokens: mission.communication === 'limited' ? Math.max(0, count - 2) : count, usedBy: [], allowedPlayerIds: mission.communication === 'limited' ? [] : room.players.map((member) => member.id), signals: {} }, briefingEndsAt: Date.now() + 5_000, sonarEndsAt: null, turnEndsAt: null, nextStageAt: null, result: null, failureReason: null, finished: false
   };
