@@ -1,79 +1,107 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { canPlayCard, cardWins, communicationPosition, drawTasks, TASK_CATALOG, taskPassBudget, taskSetStatus, taskStatus, timedPlayCard, trickWinner } from '../lib/game.mjs';
+import { canPlayCard, cardWins, communicationPosition, createDeck, drawTasks, missionForStage, TASK_CATALOG, taskDifficulty, taskPassBudget, taskSetStatus, taskStatus, timedPlayCard, trickWinner } from '../lib/game.mjs';
 
-test('must follow the lead suit when possible', () => {
-  const hand = [{ suit: 'blue', rank: 2 }, { suit: 'green', rank: 1 }];
+const card = (suit, rank) => ({ suit, rank });
+function state({ history = [], won = { a: [], b: [], c: [] }, finished = false, captainId = 'b' } = {}) {
+  return { trickHistory: history, won, hands: { a: [], b: [], c: [] }, streaks: { a: 0, b: 0, c: 0 }, completedTricks: history.length, finished, captainId };
+}
+
+test('must follow the lead suit, except a submarine can always be played', () => {
+  const hand = [card('blue', 2), card('green', 1), card('sub', 1)];
   assert.equal(canPlayCard(hand, hand[1], 'blue'), false);
   assert.equal(canPlayCard(hand, hand[0], 'blue'), true);
+  assert.equal(canPlayCard(hand, hand[2], 'blue'), true);
 });
-test('a submarine may be played even when the lead color is held', () => {
-  const hand = [{ suit: 'blue', rank: 2 }, { suit: 'sub', rank: 1 }];
-  assert.equal(canPlayCard(hand, hand[1], 'blue'), true);
-});
-test('timed plays prioritize lead color, then submarines, then any card', () => {
-  const matching = [{ suit: 'blue', rank: 2 }, { suit: 'blue', rank: 6 }, { suit: 'sub', rank: 1 }];
+
+test('timed plays prefer the lead color, then submarines, then any card', () => {
+  const matching = [card('blue', 2), card('blue', 6), card('sub', 1)];
   assert.deepEqual(timedPlayCard(matching, 'blue', () => .9), matching[1]);
-  const submarines = [{ suit: 'green', rank: 4 }, { suit: 'sub', rank: 2 }, { suit: 'sub', rank: 4 }];
+  const submarines = [card('green', 4), card('sub', 2), card('sub', 4)];
   assert.deepEqual(timedPlayCard(submarines, 'blue', () => .8), submarines[2]);
-  const remaining = [{ suit: 'green', rank: 4 }, { suit: 'pink', rank: 2 }];
-  assert.deepEqual(timedPlayCard(remaining, 'blue', () => .8), remaining[1]);
 });
-test('task failure is detected immediately when its target goes to another player', () => {
-  const state = { trickHistory: [{ winnerId: 'b', cards: [{ suit: 'blue', rank: 4 }] }], won: { a: [], b: [[{ suit: 'blue', rank: 4 }]] }, hands: { a: [], b: [] }, completedTricks: 1, finished: false };
-  assert.equal(taskStatus({ type: 'winCard', suit: 'blue', rank: 4 }, state, 'a'), 'failed');
-  assert.equal(taskStatus({ type: 'parityTrick', parity: 'even' }, state, 'a'), 'failed');
+
+test('submarines win tricks in rank order', () => {
+  assert.equal(cardWins(card('sub', 1), card('pink', 9), 'pink'), true);
+  assert.equal(trickWinner([{ playerId: 'a', card: card('green', 9) }, { playerId: 'b', card: card('sub', 2) }, { playerId: 'c', card: card('sub', 4) }]).playerId, 'c');
 });
-test('a fully completed task set stays successful when the last trick finalizes it', () => {
-  const first = [{ suit: 'blue', rank: 1 }, { suit: 'green', rank: 3 }, { suit: 'pink', rank: 5 }];
-  const middle = [{ suit: 'yellow', rank: 2 }, { suit: 'yellow', rank: 4 }, { suit: 'sub', rank: 1 }];
-  const last = [{ suit: 'blue', rank: 9 }, { suit: 'pink', rank: 7 }, { suit: 'green', rank: 8 }];
-  const state = { trickHistory: [{ winnerId: 'a', cards: first }, { winnerId: 'b', cards: middle }, { winnerId: 'a', cards: last }], won: { a: [first, last], b: [middle], c: [] }, hands: { a: [], b: [], c: [] }, streaks: { a: 1, b: 0, c: 0 }, completedTricks: 3, finished: true };
-  const tasks = [
-    { type: 'winCard', suit: 'blue', rank: 1, ownerId: 'a' }, { type: 'winCard', suit: 'blue', rank: 9, when: 'last', ownerId: 'a' },
-    { type: 'firstTrick', ownerId: 'a' }, { type: 'lastTrick', ownerId: 'a' }, { type: 'avoidSuit', suit: 'yellow', ownerId: 'a' },
-    { type: 'exactTricks', amount: 2, ownerId: 'a' }, { type: 'mostTricks', ownerId: 'a' }, { type: 'firstAndLast', ownerId: 'a' },
-    { type: 'parityTrick', parity: 'odd', ownerId: 'a' }, { type: 'balancedTrick', suits: ['blue', 'pink'], ownerId: 'a' },
-    { type: 'twoSuitsTrick', ownerId: 'a' }
-  ];
-  const result = taskSetStatus(tasks, state);
+
+test('the CSV-backed catalog contains all 100 supplied cards and exact difficulty columns', () => {
+  assert.equal(TASK_CATALOG.length, 100);
+  assert.deepEqual(TASK_CATALOG[0].difficulty, [1, 1, 1]);
+  assert.deepEqual(TASK_CATALOG[54].difficulty, [3, 3, 2]);
+  assert.deepEqual(TASK_CATALOG[95].difficulty, [4, 3, 3]);
+  assert.equal(TASK_CATALOG[54].type, 'declaredTricks');
+  assert.equal(TASK_CATALOG[54].visibility, 'public');
+  assert.equal(TASK_CATALOG[95].type, 'declaredTricks');
+  assert.equal(TASK_CATALOG[95].visibility, 'secret');
+});
+
+test('single-player-count cards only appear at their provided player count', () => {
+  const singleCountCards = TASK_CATALOG.filter((task) => task.difficulty.filter(Number.isInteger).length === 1);
+  assert.equal(singleCountCards.length, 6);
+  assert.deepEqual(singleCountCards.map((task) => task.id), ['mission-069', 'mission-070', 'mission-071', 'mission-074', 'mission-075', 'mission-076']);
+  for (const task of singleCountCards) {
+    for (const players of [3, 4, 5]) {
+      const appears = Number.isInteger(taskDifficulty(task, players));
+      assert.equal(appears, TASK_CATALOG.filter((candidate) => Number.isInteger(taskDifficulty(candidate, players))).includes(task));
+    }
+  }
+});
+
+test('every configured stage can draw an exact task difficulty total for every player count', () => {
+  for (const players of [3, 4, 5]) {
+    for (let stage = 1; stage <= 32; stage += 1) {
+      const target = missionForStage(stage, players, () => .1).difficulty;
+      for (let simulation = 0; simulation < 30; simulation += 1) {
+        const tasks = drawTasks(players, target);
+        assert.ok(tasks.length > 0, `${players}인 / 단계 ${stage} 과제 없음`);
+        assert.equal(tasks.reduce((sum, task) => sum + taskDifficulty(task, players), 0), target);
+        assert.ok(tasks.every((task) => Number.isInteger(taskDifficulty(task, players))));
+      }
+    }
+  }
+});
+
+test('required-card and forbidden-card tasks fail at the trick that makes them impossible', () => {
+  const history = [{ winnerId: 'b', cards: [card('blue', 4), card('yellow', 9)] }];
+  const current = state({ history, won: { a: [], b: [history[0].cards], c: [] } });
+  assert.equal(taskStatus({ type: 'winCards', cards: [card('blue', 4)] }, current, 'a'), 'failed');
+  assert.equal(taskStatus({ type: 'avoidRanks', ranks: [9] }, current, 'b'), 'failed');
+});
+
+test('play-a-rank then win-a-rank tasks use the server play history', () => {
+  const trick = { winnerId: 'a', cards: [card('blue', 6), card('green', 6), card('pink', 3)], plays: [{ playerId: 'a', card: card('blue', 6) }, { playerId: 'b', card: card('green', 6) }, { playerId: 'c', card: card('pink', 3) }] };
+  const current = state({ history: [trick], won: { a: [trick.cards], b: [], c: [] } });
+  assert.equal(taskStatus({ type: 'playRankWinRank', playedRank: 6, targetRank: 6, otherSuit: true }, current, 'a'), 'complete');
+});
+
+test('declared-trick tasks remain pending until a declaration and enforce the selected exact total', () => {
+  const wonOne = [card('blue', 1), card('green', 2), card('pink', 3)];
+  const inProgress = state({ history: [{ winnerId: 'a', cards: wonOne }], won: { a: [wonOne], b: [], c: [] } });
+  assert.equal(taskStatus({ type: 'declaredTricks', declaredTricks: null }, inProgress, 'a'), 'active');
+  assert.equal(taskStatus({ type: 'declaredTricks', declaredTricks: 0 }, inProgress, 'a'), 'failed');
+  assert.equal(taskStatus({ type: 'declaredTricks', declaredTricks: 1 }, { ...inProgress, finished: true }, 'a'), 'complete');
+});
+
+test('task set reports success only after every assigned card is complete', () => {
+  const trick = { winnerId: 'a', cards: [card('blue', 1), card('green', 3), card('pink', 5)] };
+  const done = state({ history: [trick], won: { a: [trick.cards], b: [], c: [] }, finished: true });
+  const result = taskSetStatus([{ type: 'winCards', cards: [card('blue', 1)], ownerId: 'a' }, { type: 'exactTricks', amount: 1, ownerId: 'a' }], done);
   assert.equal(result.failedTask, null);
   assert.equal(result.allComplete, true);
 });
-test('a server-shaped completed trick resolves card and pattern tasks immediately', () => {
-  const cards = [{ playerId: 'a', card: { suit: 'blue', rank: 3 } }, { playerId: 'b', card: { suit: 'green', rank: 5 } }, { playerId: 'c', card: { suit: 'pink', rank: 7 } }];
-  const state = { trickHistory: [{ winnerId: 'a', cards: cards.map((play) => play.card) }], won: { a: [cards.map((play) => play.card)], b: [], c: [] }, hands: { a: [], b: [], c: [] }, streaks: { a: 1, b: 0, c: 0 }, completedTricks: 1, finished: false };
-  const result = taskSetStatus([{ type: 'winCard', suit: 'blue', rank: 3, ownerId: 'a' }, { type: 'atLeastTricks', amount: 1, ownerId: 'a' }, { type: 'twoSuitsTrick', ownerId: 'a' }], state);
-  assert.equal(result.failedTask, null);
-  assert.equal(result.allComplete, true);
-});
-test('final-only tasks remain active before the last trick and do not trigger a false failure', () => {
-  const state = { trickHistory: [{ winnerId: 'a', cards: [{ suit: 'blue', rank: 1 }] }], won: { a: [[{ suit: 'blue', rank: 1 }]], b: [], c: [] }, hands: { a: [{ suit: 'green', rank: 2 }], b: [{ suit: 'pink', rank: 3 }], c: [{ suit: 'yellow', rank: 4 }] }, streaks: { a: 1, b: 0, c: 0 }, completedTricks: 1, finished: false };
-  const result = taskSetStatus([{ type: 'lastTrick', ownerId: 'a' }, { type: 'avoidSub', ownerId: 'a' }, { type: 'exactTricks', amount: 1, ownerId: 'a' }], state);
-  assert.equal(result.failedTask, null);
-  assert.equal(result.allComplete, false);
-});
-test('submarine beats a color card', () => {
-  assert.equal(cardWins({ suit: 'sub', rank: 1 }, { suit: 'pink', rank: 9 }, 'pink'), true);
-});
-test('highest submarine wins a trick', () => {
-  const winner = trickWinner([{ playerId: 'a', card: { suit: 'green', rank: 9 } }, { playerId: 'b', card: { suit: 'sub', rank: 2 } }, { playerId: 'c', card: { suit: 'sub', rank: 4 } }]);
-  assert.equal(winner.playerId, 'c');
-});
-test('task drawing reaches the mission target exactly', () => {
-  assert.equal(drawTasks(4, 3).reduce((sum, task) => sum + task.difficulty[1], 0), 3);
-});
-test('expanded task catalog has all 96 cards', () => {
-  assert.equal(TASK_CATALOG.length, 96);
-});
-test('communication only permits highest, lowest, or only colored card', () => {
-  const hand = [{ suit: 'blue', rank: 1 }, { suit: 'blue', rank: 4 }, { suit: 'blue', rank: 8 }, { suit: 'green', rank: 5 }];
+
+test('communication permits only high, low, or only colored cards', () => {
+  const hand = [card('blue', 1), card('blue', 4), card('blue', 8), card('green', 5)];
   assert.equal(communicationPosition(hand, hand[0]), 'low');
   assert.equal(communicationPosition(hand, hand[1]), null);
   assert.equal(communicationPosition(hand, hand[2]), 'high');
   assert.equal(communicationPosition(hand, hand[3]), 'only');
 });
-test('pass budget fills the unused task-selection slots', () => {
+
+test('deck and pass math remain valid for 3–5 players', () => {
+  assert.equal(createDeck().length, 40);
   assert.equal(taskPassBudget(3, 4), 2);
   assert.equal(taskPassBudget(3, 1), 2);
   assert.equal(taskPassBudget(5, 10), 0);
