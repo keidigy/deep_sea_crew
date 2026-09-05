@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { canPlayCard, cardWins, communicationPosition, createDeck, drawTasks, missionForStage, shuffle, TASK_CATALOG, taskDifficulty, taskEligible, taskPassBudget, taskSetStatus, taskStatus, timedPlayCard, trickWinner } from '../lib/game.mjs';
+import { canPlayCard, cardWins, communicationPosition, createDeck, drawTasks, missionForStage, shuffle, STAGES, TASK_CATALOG, taskDifficulty, taskEligible, taskPassBudget, taskSetStatus, taskStatus, tasksByIds, timedPlayCard, trickWinner } from '../lib/game.mjs';
 
 const card = (suit, rank) => ({ suit, rank });
 function state({ history = [], won = { a: [], b: [], c: [] }, finished = false, captainId = 'b' } = {}) {
@@ -67,6 +67,7 @@ test('every configured stage can draw an exact task difficulty total for every p
   for (const players of [3, 4, 5]) {
     for (let stage = 1; stage <= 32; stage += 1) {
       const target = missionForStage(stage, players, () => .1).difficulty;
+      if (target === null) continue;
       for (let simulation = 0; simulation < 30; simulation += 1) {
         const tasks = drawTasks(players, target);
         assert.ok(tasks.length > 0, `${players}인 / 단계 ${stage} 과제 없음`);
@@ -81,6 +82,7 @@ test('starting-hand restrictions never prevent an exact valid mission draw', () 
   for (const players of [3, 4, 5]) {
     for (let stage = 1; stage <= 32; stage += 1) {
       const target = missionForStage(stage, players, () => .1).difficulty;
+      if (target === null) continue;
       for (let simulation = 0; simulation < 30; simulation += 1) {
         const deck = shuffle(createDeck());
         if (players === 3) deck.pop();
@@ -92,6 +94,19 @@ test('starting-hand restrictions never prevent an exact valid mission draw', () 
       }
     }
   }
+});
+
+test('the supplied stage book defines special stage rules and fixed final tasks', () => {
+  assert.equal(STAGES.length, 32);
+  assert.equal(missionForStage(3, 4).difficulty, 3);
+  assert.equal(missionForStage(8, 4).difficulty, null);
+  assert.deepEqual(missionForStage(12, 4).forbidLeadSuits, ['sub', 'pink']);
+  assert.equal(missionForStage(17, 4).selectionMode, 'free');
+  assert.equal(missionForStage(23, 4).communication, 'afterFirstTrick');
+  assert.equal(missionForStage(20, 4, () => .05).communication, 'normal');
+  assert.equal(missionForStage(20, 4, () => .4).communication, 'currents');
+  assert.equal(missionForStage(20, 4, () => .9).communication, 'none');
+  assert.deepEqual(tasksByIds(4, missionForStage(32, 4).fixedTaskIds).map((task) => task.id), ['mission-094', 'mission-073', 'mission-008', 'mission-079']);
 });
 
 test('required-card and forbidden-card tasks fail at the trick that makes them impossible', () => {

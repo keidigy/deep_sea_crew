@@ -2,7 +2,7 @@ import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { extname, join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { canPlayCard, communicationPosition, createDeck, drawTasks, missionForStage, shuffle, taskPassBudget, taskSetStatus, taskStatus, timedPlayCard, trickWinner } from './lib/game.mjs';
+import { canPlayCard, communicationPosition, createDeck, drawTasks, missionForStage, shuffle, taskPassBudget, taskSetStatus, taskStatus, tasksByIds, timedPlayCard, trickWinner } from './lib/game.mjs';
 
 const root = join(process.cwd(), 'public');
 const publicRoot = resolve(root);
@@ -24,7 +24,7 @@ function publicRoom(room, viewerId) {
     code: room.code, stage: room.stage, version: room.version, status: room.status, hostId: room.hostId, initialHostId: room.initialHostId, campaign: room.campaign,
     players: room.players.map((member, seat) => ({ id: member.id, name: member.name, host: member.host, seat, handCount: game?.hands[member.id]?.length ?? 0 })),
     game: game && {
-      stage: game.stage, captainId: game.captainId, leaderId: game.leaderId, turnId: game.turnId, turnEndsAt: game.turnEndsAt, missionDifficulty: game.missionDifficulty, sonarEndsAt: game.sonarEndsAt, briefingEndsAt: game.briefingEndsAt, nextStageAt: game.nextStageAt, failureReason: game.failureReason,
+      stage: game.stage, captainId: game.captainId, leaderId: game.leaderId, turnId: game.turnId, turnEndsAt: game.turnEndsAt, missionDifficulty: game.missionDifficulty, stageNote: game.stageNote, sonarConstraint: game.sonarConstraint, stageRules: game.stageRules, selectionMode: game.selectionMode, allTasksToOne: game.allTasksToOne, allTasksOwnerId: game.allTasksOwnerId, captainSkipsTask: game.captainSkipsTask, briefingEndsAt: game.briefingEndsAt, nextStageAt: game.nextStageAt, failureReason: game.failureReason,
       selectedTasks: game.tasks.map((task) => ({ ...task, declarationConfirmed: task.type !== 'declaredTricks' || task.declaredTricks !== null, declaredTricks: task.visibility === 'secret' && task.ownerId !== viewerId && !game.finished ? null : task.declaredTricks, status: task.ownerId ? taskStatus(task, game, task.ownerId) : 'unassigned' })),
       selectionTurnId: game.selectionTurnId, passCount: game.passCount, passBudget: game.passBudget, passHistory: game.passHistory, canPassTask: canPassTask(room, viewerId), currentTrick: game.currentTrick.map((play) => ({ playerId: play.playerId, card: play.card })),
       trickHistory: game.trickHistory.map((trick) => ({ winnerId: trick.winnerId, cards: trick.cards })),
@@ -34,30 +34,34 @@ function publicRoom(room, viewerId) {
     }
   };
 }
+function stageRules(mission) { return { dominanceRank: mission.dominanceRank, firstWinnerAlwaysAhead: mission.firstWinnerAlwaysAhead, lastPlayCard: mission.lastPlayCard, forbidLeadSuits: mission.forbidLeadSuits ?? [] }; }
+function createCommunication(mission, room) {
+  const playerIds = room.players.map((member) => member.id);
+  const unavailableIds = mission.communication === 'nitrogen' ? shuffle(playerIds).slice(0, Math.min(2, Math.max(0, playerIds.length - 1))) : [];
+  const allowedPlayerIds = mission.communication === 'limited' ? [] : playerIds.filter((id) => !unavailableIds.includes(id));
+  return { mode: mission.communication, tokens: mission.communication === 'limited' ? Math.max(0, room.players.length - 2) : allowedPlayerIds.length, unavailableIds, usedBy: [], allowedPlayerIds, signals: {} };
+}
+function startPlaying(room) { const game = room.game; room.status = 'playing'; game.selectionTurnId = null; game.turnEndsAt = Date.now() + 30_000; if (!hasEligibleLead(game, game.turnId)) finishFailedMission(room, '이 단계에서는 잠수함·분홍 카드로 트릭을 시작할 수 없습니다.'); }
 function startGame(room) {
   const count = room.players.length;
-  let deck = shuffle(createDeck());
-  let reserveCard = null;
-  if (count === 3) {
-    reserveCard = deck.pop();
-    if (reserveCard.suit === 'sub' && reserveCard.rank === 4) {
-      const swapIndex = deck.findIndex((card) => card.suit !== 'sub' || card.rank !== 4);
-      [reserveCard, deck[swapIndex]] = [deck[swapIndex], reserveCard];
-    }
-  }
+  const deck = shuffle(createDeck());
   const hands = Object.fromEntries(room.players.map((member) => [member.id, []]));
+  // 3인 게임도 40장을 모두 배분한다. 한 명은 14장, 나머지는 13장이고 13트릭만 진행한다.
   deck.forEach((card, index) => hands[room.players[index % count].id].push(card));
   Object.values(hands).forEach((hand) => hand.sort((left, right) => left.suit.localeCompare(right.suit) || left.rank - right.rank));
   const captain = room.players.find((member) => hands[member.id].some((card) => card.suit === 'sub' && card.rank === 4));
   const mission = missionForStage(room.stage, count);
-  const missionDifficulty = mission.difficulty;
+  const tasks = mission.fixedTaskIds ? tasksByIds(count, mission.fixedTaskIds, hands) : mission.difficulty === null ? [] : drawTasks(count, mission.difficulty, hands);
   room.game = {
-    stage: mission.stage, hands, reserveCard, captainId: captain.id, leaderId: captain.id, turnId: captain.id, selectionTurnId: captain.id,
-    missionDifficulty, tasks: drawTasks(count, missionDifficulty, hands), passCount: 0, passBudget: 0, passHistory: [], trickHistory: [], currentTrick: [], completedTricks: 0, totalTricks: deck.length / count,
-    won: Object.fromEntries(room.players.map((member) => [member.id, []])), streaks: Object.fromEntries(room.players.map((member) => [member.id, 0])),
-    communication: { mode: mission.communication, tokens: mission.communication === 'limited' ? Math.max(0, count - 2) : count, usedBy: [], allowedPlayerIds: mission.communication === 'limited' ? [] : room.players.map((member) => member.id), signals: {} }, briefingEndsAt: Date.now() + 5_000, sonarEndsAt: null, turnEndsAt: null, nextStageAt: null, result: null, failureReason: null, finished: false
+    stage: mission.stage, stageNote: mission.note, sonarConstraint: mission.sonarConstraint, stageRules: stageRules(mission), selectionMode: mission.selectionMode ?? 'turn', allTasksToOne: Boolean(mission.allTasksToOne), allTasksOwnerId: null, captainSkipsTask: Boolean(mission.captainSkipsTask),
+    hands, reserveCard: null, captainId: captain.id, leaderId: captain.id, turnId: captain.id, selectionTurnId: captain.id, missionDifficulty: mission.difficulty, tasks, passCount: 0, passBudget: 0, passHistory: [], trickHistory: [], currentTrick: [], completedTricks: 0, totalTricks: Math.floor(deck.length / count),
+    won: Object.fromEntries(room.players.map((member) => [member.id, []])), streaks: Object.fromEntries(room.players.map((member) => [member.id, 0])), communication: createCommunication(mission, room), briefingEndsAt: Date.now() + 5_000, sonarEndsAt: null, turnEndsAt: null, nextStageAt: null, result: null, failureReason: null, finished: false
   };
-  room.game.passBudget = taskPassBudget(count, room.game.tasks.length);
+  if (mission.captainHighestTask && tasks.length) {
+    const highest = [...tasks].sort((left, right) => (right.difficulty[count - 3] ?? 0) - (left.difficulty[count - 3] ?? 0))[0];
+    highest.ownerId = captain.id;
+  }
+  room.game.passBudget = taskPassBudget(count, tasks.length);
   room.status = 'briefing';
 }
 function grantCommunication(room, actorId, playerId) {
@@ -73,31 +77,44 @@ function grantCommunication(room, actorId, playerId) {
 }
 function communicate(room, actorId, cardId) {
   const game = room.game; const comm = game.communication;
-  if (room.status !== 'playing') throw new Error('카드 내기 중에만 소나 표기를 할 수 있습니다.');
+  const canUseNow = room.status === 'playing' ? comm.mode !== 'preGame' : room.status === 'selecting' && comm.mode === 'preGame';
+  if (!canUseNow) throw new Error(comm.mode === 'preGame' ? '이 단계의 소나는 본 게임 시작 전에만 사용할 수 있습니다.' : '지금은 소나 표기를 사용할 수 없습니다.');
+  if (comm.mode === 'afterFirstTrick' && game.completedTricks < 1) throw new Error('이 단계의 소나는 두 번째 트릭부터 사용할 수 있습니다.');
   if (comm.mode === 'none' || !comm.allowedPlayerIds.includes(actorId) || comm.usedBy.includes(actorId)) throw new Error('이 단계에서는 소나 표기를 사용할 수 없습니다.');
-  const hand = game.hands[actorId]; const card = hand.find((candidate) => candidate.id === cardId); const position = card && communicationPosition(hand, card);
-  if (!position) throw new Error('색 카드 중 해당 색의 최고·유일·최저 카드만 표기할 수 있습니다.');
-  comm.signals[actorId] = { card, position: comm.mode === 'currents' ? 'center' : position };
+  const hand = game.hands[actorId]; const card = hand.find((candidate) => candidate.id === cardId); const position = card && (comm.mode === 'currents' ? (card.suit === 'sub' ? null : 'current') : communicationPosition(hand, card));
+  if (!position) throw new Error(comm.mode === 'currents' ? '해류에서는 색깔 카드만 빨간 표기로 표시할 수 있습니다.' : '색 카드 중 해당 색의 최고·유일·최저 카드만 표기할 수 있습니다.');
+  comm.signals[actorId] = { card, position };
   comm.usedBy.push(actorId);
 }
 function nextPlayer(room, playerId) { return room.players[(room.players.findIndex((member) => member.id === playerId) + 1) % room.players.length].id; }
 function pendingDeclaration(game) { return game.tasks.find((task) => task.ownerId && task.type === 'declaredTricks' && task.declaredTricks === null); }
-function canPassTask(room, actorId) { return room.status === 'selecting' && room.game?.selectionTurnId === actorId && !pendingDeclaration(room.game) && room.game.passCount < room.game.passBudget; }
+function canPassTask(room, actorId) { const game = room.game; return room.status === 'selecting' && game?.selectionMode === 'turn' && game.selectionTurnId === actorId && !pendingDeclaration(game) && (game.captainSkipsTask && actorId === game.captainId || game.passCount < game.passBudget); }
 function continueAfterTaskSelection(room, actorId) {
   const game = room.game;
   if (pendingDeclaration(game)) return;
-  if (game.tasks.every((candidate) => candidate.ownerId)) { room.status = 'playing'; game.selectionTurnId = null; game.turnEndsAt = Date.now() + 30_000; return; }
+  if (game.tasks.every((candidate) => candidate.ownerId)) { startPlaying(room); return; }
+  if (game.selectionMode === 'free') return;
+  if (game.allTasksToOne && game.allTasksOwnerId) { game.selectionTurnId = game.allTasksOwnerId; return; }
   game.selectionTurnId = nextPlayer(room, actorId);
 }
 function selectTask(room, actorId, taskId) {
   const game = room.game;
-  if (room.status !== 'selecting' || game.selectionTurnId !== actorId) throw new Error('지금은 과제를 선택할 차례가 아닙니다.');
+  if (room.status !== 'selecting' || game.selectionMode !== 'free' && game.selectionTurnId !== actorId) throw new Error('지금은 과제를 선택할 차례가 아닙니다.');
   if (pendingDeclaration(game)) throw new Error('선택한 과제의 트릭 수 선언을 먼저 확정해 주세요.');
+  if (game.allTasksToOne && game.allTasksOwnerId !== actorId) throw new Error('이 단계의 모든 과제는 지정된 대원만 가져갈 수 있습니다.');
   const task = game.tasks.find((candidate) => candidate.id === taskId && !candidate.ownerId);
   if (!task) throw new Error('선택할 수 없는 과제입니다.');
-  if (task.captainCannotOwn && actorId === game.captainId) throw new Error('사령관은 이 과제를 선택할 수 없습니다.');
+  if ((task.captainCannotOwn || game.captainSkipsTask) && actorId === game.captainId) throw new Error('사령관은 이 과제를 선택할 수 없습니다.');
   task.ownerId = actorId;
   continueAfterTaskSelection(room, actorId);
+}
+function assignAllTasksOwner(room, actorId, targetPlayerId) {
+  const game = room.game;
+  if (room.status !== 'selecting' || !game.allTasksToOne || actorId !== game.captainId || game.allTasksOwnerId) throw new Error('지금은 과제 일괄 배정할 수 없습니다.');
+  if (!room.players.some((member) => member.id === targetPlayerId)) throw new Error('대원을 찾을 수 없습니다.');
+  game.allTasksOwnerId = targetPlayerId;
+  game.tasks.filter((task) => !task.ownerId).forEach((task) => { task.ownerId = targetPlayerId; });
+  continueAfterTaskSelection(room, targetPlayerId);
 }
 function declareTricks(room, actorId, taskId, declaredTricks) {
   const game = room.game;
@@ -111,9 +128,37 @@ function declareTricks(room, actorId, taskId, declaredTricks) {
 function passTask(room, actorId) {
   const game = room.game;
   if (!canPassTask(room, actorId)) throw new Error('이 임무에서 허용된 패스를 모두 사용했습니다.');
-  game.passCount += 1;
+  if (!(game.captainSkipsTask && actorId === game.captainId)) game.passCount += 1;
   game.passHistory.push(actorId);
   game.selectionTurnId = nextPlayer(room, actorId);
+}
+function stageRuleFailure(room) {
+  const game = room.game; const rules = game.stageRules;
+  if (rules.dominanceRank) {
+    const rankCounts = Object.fromEntries(room.players.map((member) => [member.id, game.won[member.id].flat().filter((card) => card.suit !== 'sub' && card.rank === rules.dominanceRank).length]));
+    for (const left of room.players) for (const right of room.players) if (left.id !== right.id && rankCounts[left.id] >= rankCounts[right.id] + 2) return `${left.name} 님이 색깔 ${rules.dominanceRank} 카드를 다른 대원보다 2장 이상 많이 획득했습니다.`;
+  }
+  if (rules.firstWinnerAlwaysAhead && game.completedTricks >= 2) {
+    const firstWinnerId = game.trickHistory[0]?.winnerId; const firstCount = game.won[firstWinnerId]?.length ?? 0;
+    if (room.players.some((member) => member.id !== firstWinnerId && firstCount <= game.won[member.id].length)) return '첫 트릭 승자는 두 번째 트릭부터 항상 다른 대원보다 많은 트릭을 가져야 합니다.';
+  }
+  if (rules.lastPlayCard) {
+    const targetPlayed = game.trickHistory.flatMap((trick) => trick.plays).find((play) => play.card.suit === rules.lastPlayCard.suit && play.card.rank === rules.lastPlayCard.rank);
+    const finalPlay = game.trickHistory.at(-1)?.plays?.at(-1);
+    if (targetPlayed && (game.completedTricks !== game.totalTricks || finalPlay !== targetPlayed)) return '노랑 5 카드는 마지막 트릭의 마지막 카드로 내야 합니다.';
+    if (game.completedTricks === game.totalTricks && (!finalPlay || finalPlay.card.suit !== rules.lastPlayCard.suit || finalPlay.card.rank !== rules.lastPlayCard.rank)) return '노랑 5 카드는 마지막 트릭의 마지막 카드로 내야 합니다.';
+  }
+  return null;
+}
+function stageNeedsFinalTrick(game) { const rules = game.stageRules; return Boolean(rules.dominanceRank || rules.firstWinnerAlwaysAhead || rules.lastPlayCard); }
+function hasEligibleLead(game, playerId) { const forbidden = game.stageRules.forbidLeadSuits; return !forbidden.length || game.hands[playerId].some((card) => !forbidden.includes(card.suit)); }
+function beginSelection(room) {
+  const game = room.game; game.briefingEndsAt = null;
+  if (!game.tasks.length) { startPlaying(room); return; }
+  if (game.tasks.every((task) => task.ownerId)) { startPlaying(room); return; }
+  room.status = 'selecting';
+  if (game.selectionMode === 'free') { game.selectionTurnId = null; return; }
+  if (game.tasks.some((task) => task.ownerId)) game.selectionTurnId = nextPlayer(room, game.captainId);
 }
 function advanceRoom(room) {
   const game = room.game;
@@ -126,12 +171,11 @@ function advanceRoom(room) {
     room.version += 1;
     return;
   }
-  if (room.status === 'briefing' && now >= game.briefingEndsAt) {
-    room.status = 'selecting'; game.briefingEndsAt = null; room.version += 1;
-  }
+  if (room.status === 'briefing' && now >= game.briefingEndsAt) { beginSelection(room); room.version += 1; }
   if (room.status === 'playing' && game.turnEndsAt && now >= game.turnEndsAt) {
-    const card = timedPlayCard(game.hands[game.turnId], game.currentTrick[0]?.card.suit);
-    if (card) { playCard(room, game.turnId, card.id); room.version += 1; }
+    const hand = game.currentTrick.length ? game.hands[game.turnId] : game.hands[game.turnId].filter((card) => !game.stageRules.forbidLeadSuits.includes(card.suit));
+    const card = timedPlayCard(hand, game.currentTrick[0]?.card.suit);
+    if (card) { playCard(room, game.turnId, card.id); room.version += 1; } else finishFailedMission(room, '이 단계에서는 잠수함·분홍 카드로 트릭을 시작할 수 없습니다.');
   }
 }
 function finishFailedMission(room, reason) {
@@ -156,6 +200,7 @@ function playCard(room, actorId, cardId) {
   if (index < 0) throw new Error('손에 없는 카드입니다.');
   const card = hand[index];
   const leadSuit = game.currentTrick[0]?.card.suit;
+  if (!leadSuit && game.stageRules.forbidLeadSuits.includes(card.suit)) throw new Error('이 단계에서는 잠수함 또는 분홍 카드로 트릭을 시작할 수 없습니다.');
   if (!canPlayCard(hand, card, leadSuit)) throw new Error('같은 색 카드가 있다면 반드시 그 색을 내야 합니다.');
   hand.splice(index, 1); game.currentTrick.push({ playerId: actorId, card });
   if (game.currentTrick.length < room.players.length) { game.turnId = nextPlayer(room, actorId); game.turnEndsAt = Date.now() + 30_000; return; }
@@ -165,18 +210,22 @@ function playCard(room, actorId, cardId) {
   // 과제 판정과 클라이언트 애니메이션이 같은 카드 형태를 보도록 플레이 기록에서는 카드만 보관한다.
   game.trickHistory.push({ winnerId: winner.playerId, cards: game.currentTrick.map((play) => play.card), plays: game.currentTrick.map((play) => ({ ...play })) });
   game.completedTricks += 1; game.currentTrick = []; game.leaderId = winner.playerId; game.turnId = winner.playerId; game.turnEndsAt = Date.now() + 30_000;
+  const specialFailure = stageRuleFailure(room);
+  if (specialFailure) { finishFailedMission(room, `단계 규칙 실패: ${specialFailure}`); return; }
   const progress = taskSetStatus(game.tasks, game);
   if (progress.failedTask) { finishFailedMission(room, `과제 실패: ${progress.failedTask.label}`); return; }
-  if (progress.allComplete) { finishSuccessfulMission(room); return; }
-  const allHandsEmpty = room.players.every((member) => game.hands[member.id].length === 0);
-  if (allHandsEmpty) {
+  if (progress.allComplete && !stageNeedsFinalTrick(game)) { finishSuccessfulMission(room); return; }
+  if (game.completedTricks >= game.totalTricks) {
     // 일부 과제는 마지막 트릭이 끝난 뒤에만 완료 여부를 확정할 수 있다.
     game.finished = true;
-    const success = taskSetStatus(game.tasks, game).allComplete;
+    const finalFailure = stageRuleFailure(room);
+    const success = !finalFailure && (game.tasks.length === 0 || taskSetStatus(game.tasks, game).allComplete);
     game.finished = false;
     if (success) finishSuccessfulMission(room);
-    else finishFailedMission(room, '마지막 트릭까지 과제를 완료하지 못했습니다.');
+    else finishFailedMission(room, finalFailure ? `단계 규칙 실패: ${finalFailure}` : '마지막 트릭까지 과제를 완료하지 못했습니다.');
+    return;
   }
+  if (!hasEligibleLead(game, winner.playerId)) finishFailedMission(room, '이 단계에서는 잠수함·분홍 카드로 트릭을 시작할 수 없습니다.');
 }
 function removeLobbyPlayer(room, playerId) {
   const leavingIndex = room.players.findIndex((member) => member.id === playerId);
@@ -235,6 +284,7 @@ function mutate(code, actorId, action, payload) {
   if (action === 'retryMission') { if (actorId !== room.initialHostId) throw new Error('처음 방을 만든 방장만 재시도할 수 있습니다.'); if (room.status !== 'finished' || room.game?.result !== 'fail') throw new Error('실패한 임무만 재시도할 수 있습니다.'); startGame(room); }
   if (action === 'resetMission') { if (actorId !== room.initialHostId) throw new Error('처음 방을 만든 방장만 임무를 재설정할 수 있습니다.'); if (room.status !== 'finished' || room.game?.result !== 'fail') throw new Error('실패한 임무만 재설정할 수 있습니다.'); room.stage = room.campaign.initialStage; room.campaign.stagesTraversed = 1; startGame(room); }
   if (action === 'selectTask') selectTask(room, actorId, payload.taskId);
+  if (action === 'assignAllTasksOwner') assignAllTasksOwner(room, actorId, payload.targetPlayerId);
   if (action === 'declareTricks') declareTricks(room, actorId, payload.taskId, payload.declaredTricks);
   if (action === 'passTask') passTask(room, actorId);
   if (action === 'grantCommunication') grantCommunication(room, actorId, payload.targetPlayerId);
