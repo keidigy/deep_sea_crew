@@ -33,6 +33,8 @@ test('the CSV-backed catalog has 96 physical cards, including player-count varia
   assert.deepEqual(TASK_CATALOG.find((task) => task.id === 'mission-096').difficulty, [4, 3, 3]);
   assert.equal(TASK_CATALOG[54].type, 'declaredTricks');
   assert.equal(TASK_CATALOG[54].visibility, 'public');
+  assert.equal(TASK_CATALOG.find((task) => task.id === 'mission-023').captainCannotOwn, true);
+  assert.equal(TASK_CATALOG.find((task) => task.id === 'mission-027').captainCannotOwn, true);
   assert.equal(TASK_CATALOG.find((task) => task.id === 'mission-096').type, 'declaredTricks');
   assert.equal(TASK_CATALOG.find((task) => task.id === 'mission-096').visibility, 'secret');
 });
