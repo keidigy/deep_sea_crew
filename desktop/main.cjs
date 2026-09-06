@@ -93,14 +93,13 @@ async function loginCloudflare() {
   loginProcess.stderr.on('data', (data) => appendMessage(data));
   loginProcess.on('exit', (code) => {
     loginProcess = undefined;
-    const loggedIn = code === 0 && cloudflareCertificateExists();
+    const loggedIn = code === 0;
     setStatus({ cloudflare: loggedIn ? 'logged-in' : 'not-checked', message: loggedIn ? 'Cloudflare 로그인이 완료되었습니다. 외부 공개를 승인할 수 있습니다.' : 'Cloudflare 로그인이 완료되지 않았습니다.' });
   });
   return { ...status };
 }
 async function shareWithCloudflare() {
   if (status.server !== 'running') throw new Error('먼저 로컬 서버를 시작해 주세요.');
-  if (!cloudflareCertificateExists()) throw new Error('외부 공개 전 Cloudflare 로그인을 완료해 주세요.');
   if (tunnelProcess) return { ...status };
   const confirmation = await dialog.showMessageBox(mainWindow, {
     type: 'warning', buttons: ['외부 공개 승인', '취소'], defaultId: 1, cancelId: 1,
