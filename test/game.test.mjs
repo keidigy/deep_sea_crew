@@ -157,7 +157,9 @@ test('communication permits only high, low, or only colored cards', () => {
 
 test('deck and pass math remain valid for 3–5 players', () => {
   assert.equal(createDeck().length, 40);
-  assert.equal(taskPassBudget(3, 4), 2);
+  assert.equal(taskPassBudget(3, 4), 0);
   assert.equal(taskPassBudget(3, 1), 2);
+  assert.equal(taskPassBudget(4, 3), 1);
+  assert.equal(taskPassBudget(5, 4), 1);
   assert.equal(taskPassBudget(5, 10), 0);
 });
