@@ -12,6 +12,7 @@ let mainWindow;
 let serverProcess;
 let tunnelProcess;
 let loginProcess;
+let monitorTimer;
 const status = { server: 'stopped', serverManaged: false, cloudflare: 'not-checked', externalUrl: '', message: '서버를 시작해 방을 만드세요.' };
 
 function emitStatus() { mainWindow?.webContents.send('host-status', { ...status }); }
@@ -23,6 +24,16 @@ function probeLocalServer() {
     request.setTimeout(450, () => { request.destroy(); resolve(false); });
     request.on('error', () => resolve(false));
   });
+}
+async function refreshServerStatus() {
+  const online = await probeLocalServer();
+  if (serverProcess) {
+    if (!online && status.server === "running") setStatus({ server: "stopped", serverManaged: false, message: "로컬 서버 연결이 끊겼습니다." });
+    return { ...status };
+  }
+  if (online && status.server !== "running") setStatus({ server: "running", serverManaged: false, message: "다른 프로세스가 로컬 게임 서버를 실행 중입니다." });
+  if (!online && status.server === "running") setStatus({ server: "stopped", serverManaged: false, message: "로컬 서버가 종료되었습니다." });
+  return { ...status };
 }
 function cloudflaredCandidates() {
   return [process.env.CLOUDFLARED_PATH, '/opt/homebrew/bin/cloudflared', '/usr/local/bin/cloudflared', 'cloudflared'].filter(Boolean);
@@ -118,11 +129,15 @@ function createWindow() {
 }
 app.whenReady().then(() => {
   createWindow();
-  ipcMain.handle('host:status', () => ({ ...status, cloudflare: cloudflareCertificateExists() ? (status.cloudflare === 'not-checked' ? 'logged-in' : status.cloudflare) : status.cloudflare }));
+  ipcMain.handle("host:status", async () => {
+    await refreshServerStatus();
+    return { ...status, cloudflare: cloudflareCertificateExists() ? (status.cloudflare === "not-checked" ? "logged-in" : status.cloudflare) : status.cloudflare };
+  });
   ipcMain.handle('host:start', startServer); ipcMain.handle('host:stop', stopServer);
   ipcMain.handle('cloudflare:login', loginCloudflare); ipcMain.handle('cloudflare:share', shareWithCloudflare);
   ipcMain.handle('cloudflare:stop', () => { stopTunnel(); return { ...status }; });
-  ipcMain.handle('host:open-local', async () => { await shell.openExternal(LOCAL_URL); return { ...status }; });
+  ipcMain.handle("host:open-local", async () => { await shell.openExternal(LOCAL_URL); return { ...status }; });
+  monitorTimer = setInterval(() => { refreshServerStatus().catch(() => {}); }, 2_500);
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });
-app.on('before-quit', () => { stopChild(loginProcess); stopTunnel(); stopChild(serverProcess); });
+app.on("before-quit", () => { clearInterval(monitorTimer); stopChild(loginProcess); stopTunnel(); stopChild(serverProcess); });
