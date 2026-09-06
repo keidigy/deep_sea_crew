@@ -28,13 +28,17 @@
     "asarUnpack": [
       "server.mjs",
       "lib/**/*",
-      "public/**/*"
+      "public/**/*",
+      "mission_cards.csv",
+      "book.csv"
     ],
     "files": [
       "desktop/**/*",
       "server.mjs",
       "lib/**/*",
       "public/**/*",
+      "mission_cards.csv",
+      "book.csv",
       "package.json"
     ],
     "mac": {
