@@ -42,18 +42,27 @@ function createCommunication(mission, room) {
   return { mode: mission.communication, tokens: mission.communication === 'limited' ? Math.max(0, room.players.length - 2) : allowedPlayerIds.length, unavailableIds, usedBy: [], allowedPlayerIds, signals: {} };
 }
 function startPlaying(room) { const game = room.game; room.status = 'playing'; game.selectionTurnId = null; game.turnEndsAt = Date.now() + 30_000; if (!hasEligibleLead(game, game.turnId)) finishFailedMission(room, '이 단계에서는 잠수함·분홍 카드로 트릭을 시작할 수 없습니다.'); }
-function startGame(room) {
+function startGame(room, retainedTaskIds = null) {
   const count = room.players.length;
-  const deck = shuffle(createDeck());
-  const hands = Object.fromEntries(room.players.map((member) => [member.id, []]));
-  // 3인 게임도 40장을 모두 배분한다. 한 명은 14장, 나머지는 13장이고 13트릭만 진행한다.
-  deck.forEach((card, index) => hands[room.players[index % count].id].push(card));
-  Object.values(hands).forEach((hand) => hand.sort((left, right) => left.suit.localeCompare(right.suit) || left.rank - right.rank));
-  const captain = room.players.find((member) => hands[member.id].some((card) => card.suit === 'sub' && card.rank === 4));
+  let deck; let hands; let tasks = null;
+  for (let attempt = 0; attempt < (retainedTaskIds ? 120 : 1); attempt += 1) {
+    deck = shuffle(createDeck());
+    hands = Object.fromEntries(room.players.map((member) => [member.id, []]));
+    deck.forEach((card, index) => hands[room.players[index % count].id].push(card));
+    Object.values(hands).forEach((hand) => hand.sort((left, right) => left.suit.localeCompare(right.suit) || left.rank - right.rank));
+    if (retainedTaskIds) {
+      try { tasks = tasksByIds(count, retainedTaskIds, hands); } catch { tasks = null; }
+    } else {
+      const mission = missionForStage(room.stage, count);
+      tasks = mission.fixedTaskIds ? tasksByIds(count, mission.fixedTaskIds, hands) : mission.difficulty === null ? [] : drawTasks(count, mission.difficulty, hands);
+    }
+    if (tasks) break;
+  }
+  if (tasks === null) throw new Error("현재 미션카드를 둘 수 있는 손패를 다시 만들지 못했습니다. 다시 시도해 주세요.");
+  const captain = room.players.find((member) => hands[member.id].some((card) => card.suit === "sub" && card.rank === 4));
   const mission = missionForStage(room.stage, count);
-  const tasks = mission.fixedTaskIds ? tasksByIds(count, mission.fixedTaskIds, hands) : mission.difficulty === null ? [] : drawTasks(count, mission.difficulty, hands);
   room.game = {
-    stage: mission.stage, stageNote: mission.note, sonarConstraint: mission.sonarConstraint, stageRules: stageRules(mission), selectionMode: mission.selectionMode ?? 'turn', allTasksToOne: Boolean(mission.allTasksToOne), allTasksOwnerId: null, captainSkipsTask: Boolean(mission.captainSkipsTask),
+    stage: mission.stage, stageNote: mission.note, sonarConstraint: mission.sonarConstraint, stageRules: stageRules(mission), selectionMode: mission.selectionMode ?? "turn", allTasksToOne: Boolean(mission.allTasksToOne), allTasksOwnerId: null, captainSkipsTask: Boolean(mission.captainSkipsTask),
     hands, reserveCard: null, captainId: captain.id, leaderId: captain.id, turnId: captain.id, selectionTurnId: captain.id, missionDifficulty: mission.difficulty, tasks, passCount: 0, passBudget: 0, passHistory: [], trickHistory: [], currentTrick: [], completedTricks: 0, totalTricks: Math.floor(deck.length / count),
     won: Object.fromEntries(room.players.map((member) => [member.id, []])), streaks: Object.fromEntries(room.players.map((member) => [member.id, 0])), communication: createCommunication(mission, room), briefingEndsAt: Date.now() + 5_000, sonarEndsAt: null, turnEndsAt: null, nextStageAt: null, result: null, failureReason: null, finished: false
   };
@@ -62,7 +71,7 @@ function startGame(room) {
     highest.ownerId = captain.id;
   }
   room.game.passBudget = taskPassBudget(count, tasks.length);
-  room.status = 'briefing';
+  room.status = "briefing";
 }
 function grantCommunication(room, actorId, playerId) {
   const game = room.game;
@@ -281,8 +290,8 @@ function mutate(code, actorId, action, payload) {
   advanceRoom(room);
   if (!room.players.some((member) => member.id === actorId)) throw new Error('이 방의 대원이 아닙니다.');
   if (action === 'start') { if (actorId !== room.hostId) throw new Error('방장만 시작할 수 있습니다.'); if (room.players.length < 3) throw new Error('최소 3명이 필요합니다.'); startGame(room); }
-  if (action === 'retryMission') { if (actorId !== room.initialHostId) throw new Error('처음 방을 만든 방장만 재시도할 수 있습니다.'); if (room.status !== 'finished' || room.game?.result !== 'fail') throw new Error('실패한 임무만 재시도할 수 있습니다.'); startGame(room); }
-  if (action === 'resetMission') { if (actorId !== room.initialHostId) throw new Error('처음 방을 만든 방장만 임무를 재설정할 수 있습니다.'); if (room.status !== 'finished' || room.game?.result !== 'fail') throw new Error('실패한 임무만 재설정할 수 있습니다.'); room.stage = room.campaign.initialStage; room.campaign.stagesTraversed = 1; startGame(room); }
+  if (action === 'retryMission') { if (actorId !== room.initialHostId) throw new Error('처음 방을 만든 방장만 재시도할 수 있습니다.'); if (room.status !== 'finished' || room.game?.result !== 'fail') throw new Error('실패한 임무만 재시도할 수 있습니다.'); startGame(room, room.game.tasks.map((task) => task.id)); }
+  if (action === 'resetMission') { if (actorId !== room.initialHostId) throw new Error('처음 방을 만든 방장만 임무를 재설정할 수 있습니다.'); if (room.status !== 'finished' || room.game?.result !== 'fail') throw new Error('실패한 임무만 재설정할 수 있습니다.'); startGame(room); }
   if (action === 'selectTask') selectTask(room, actorId, payload.taskId);
   if (action === 'assignAllTasksOwner') assignAllTasksOwner(room, actorId, payload.targetPlayerId);
   if (action === 'declareTricks') declareTricks(room, actorId, payload.taskId, payload.declaredTricks);
