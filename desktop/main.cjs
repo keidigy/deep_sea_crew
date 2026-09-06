@@ -28,7 +28,8 @@ function probeLocalServer() {
 async function refreshServerStatus() {
   const online = await probeLocalServer();
   if (serverProcess) {
-    if (!online && status.server === "running") setStatus({ server: "stopped", serverManaged: false, message: "로컬 서버 연결이 끊겼습니다." });
+    // 앱이 직접 띄운 프로세스는 종료 이벤트가 상태를 확정한다. 일시적 헬스체크 실패로 중지 처리하지 않는다.
+    if (online && status.server !== "running") setStatus({ server: "running", serverManaged: true, message: `로컬 서버가 실행 중입니다.` });
     return { ...status };
   }
   if (online && status.server !== "running") setStatus({ server: "running", serverManaged: false, message: "다른 프로세스가 로컬 게임 서버를 실행 중입니다." });
