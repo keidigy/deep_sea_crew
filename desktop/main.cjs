@@ -15,7 +15,7 @@ let loginProcess;
 let monitorTimer;
 const status = { server: 'stopped', serverManaged: false, cloudflare: 'not-checked', externalUrl: '', message: '서버를 시작해 방을 만드세요.' };
 
-function emitStatus() { mainWindow?.webContents.send('host-status', { ...status }); }
+function emitStatus() { if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) mainWindow.webContents.send('host-status', { ...status }); }
 function setStatus(next) { Object.assign(status, next); emitStatus(); }
 function appendMessage(message) { setStatus({ message: String(message).trim().slice(-500) || status.message }); }
 function probeLocalServer() {
@@ -124,7 +124,8 @@ async function shareWithCloudflare() {
 }
 
 function createWindow() {
-  mainWindow = new BrowserWindow({ width: 760, height: 680, minWidth: 620, minHeight: 560, webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false } });
+  mainWindow = new BrowserWindow({ width: 760, height: 680, resizable: false, maximizable: false, fullscreenable: false, webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false } });
+  mainWindow.on('closed', () => { mainWindow = undefined; });
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
 }
 app.whenReady().then(() => {
